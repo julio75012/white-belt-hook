@@ -16,6 +16,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {TickMath} from "v4-core/libraries/TickMath.sol";
 import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
+import {LiquidityAmounts} from "v4-core/test/utils/LiquidityAmounts.sol";
 
 import {FixedPointMathLib} from "solmate/src/utils/FixedPointMathLib.sol";
 
@@ -144,12 +145,20 @@ contract TakeProfitsHook is BaseHook, ERC1155 {
         address sellToken = zeroForOne ? Currency.unwrap(key.currency0) : Currency.unwrap(key.currency1);
         IERC20(sellToken).transferFrom(msg.sender, address(this), inputAmount);
 
+        int256 liquidity;
+
+        if (zeroForOne) {
+            liquidity = LiquidityAmounts.getLiquidityForAmount0(lowTick, highTick, inputAmount);
+        } else {
+            liquidity = LiquidityAmounts.getLiquidityForAmount1(lowTick, highTick, inputAmount);
+        }
+
         poolManager.modifyLiquidity(
             key,
             IPoolManager.ModifyLiquidityParams({
                 tickLower: lowTick,
                 tickUpper: highTick,
-                liquidityDelta: inputAmount,
+                liquidityDelta: liquidity,
                 salt: bytes32(0)
             }),
             ZERO_BYTES

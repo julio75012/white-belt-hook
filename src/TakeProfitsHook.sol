@@ -109,23 +109,30 @@ contract TakeProfitsHook is BaseHook, ERC1155 {
     }
 
     // Core Hook External Functions
-    function placeLimit(PoolKey calldata key, int24 limitOrderTick, bool zeroForOne, uint256 inputAmount)
+    function placeLimitOrder(PoolKey calldata key, int24 limitOrderTick, bool zeroForOne, uint256 inputAmount)
         external
-        returns (int24)
+        returns (int24 lowTick, int24 highTick)
     {
+        //get the mid price
         (, int24 currentTick,,) = poolManager.getSlot0(key.toId());
 
-        if (limitOrderTick == currentTick) revert InvalidOrder();
+        //checking if the currentTick matches the limitOrderTick and the intention of the user
+        //zeroForOne == true -> the users intends to place a bid order (and bid < mid)
+        //zeroForOne == false -> the users intends to place an ask order (and mid < ask)
+        //limitOrderTick == currentTick also, this case is invalid
+        if ((zeroForOne && currentTick <= limitOrderTick) || (!zeroForOne && limitOrderTick <= currentTick)) {
+            revert InvalidOrder();
+        }
 
-        zeroForOne = limitOrderTick < currentTick;
+        // Get the smallest tick range on which we will add liquidity
+        (int24 lowTick, int24 highTick) = getUsableTick(limitOrderTick, key.tickSpacing, zeroForOne);
 
-        // Get lower actually usable tick given `tickToSellAt`
-        int24 tick = getUsableTick(limitOrderTick, key.tickSpacing, zeroForOne);
-
-        //TODO: creer intervalle en tick +- 1 (en fonction de zeroForOne)
+        //we store here the tick price that a swap needs to fully cross in order to cancel the liquidity
+        int24 tick = zeroForOne ? lowTick : highTick;
 
         // Create a pending order
         pendingOrders[key.toId()][tick][zeroForOne] += inputAmount;
+        //TODO: get the high or low tick back with a function (using the tickspace)
 
         // Mint claim tokens to user equal to their `inputAmount`
         uint256 positionId = getPositionId(key, tick, zeroForOne);
@@ -137,13 +144,27 @@ contract TakeProfitsHook is BaseHook, ERC1155 {
         address sellToken = zeroForOne ? Currency.unwrap(key.currency0) : Currency.unwrap(key.currency1);
         IERC20(sellToken).transferFrom(msg.sender, address(this), inputAmount);
 
+        poolManager.modifyLiquidity(
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: lowTick,
+                tickUpper: highTick,
+                liquidityDelta: inputAmount,
+                salt: bytes32(0)
+            }),
+            ZERO_BYTES
+        );
+
         // Return the tick at which the order was actually placed
-        return tick;
+        return (lowTick, highTick);
     }
 
     function cancelOrder(PoolKey calldata key, int24 tickToSellAt, bool zeroForOne, uint256 amountToCancel) external {
-        // Get lower actually usable tick for their order
-        int24 tick = getLowerUsableTick(tickToSellAt, key.tickSpacing);
+        // Get the smallest tick range on which we will add liquidity
+        (int24 lowTick, int24 highTick) = getUsableTick(limitOrderTick, key.tickSpacing, zeroForOne);
+
+        //we store here the tick price that a swap needs to fully cross in order to cancel the liquidity
+        int24 tick = zeroForOne ? lowTick : highTick;
         uint256 positionId = getPositionId(key, tick, zeroForOne);
 
         // Check how many claim tokens they have for this position
@@ -334,7 +355,11 @@ contract TakeProfitsHook is BaseHook, ERC1155 {
         return uint256(keccak256(abi.encode(key.toId(), tick, zeroForOne)));
     }
 
-    function getUsableTick(int24 tick, int24 tickSpacing, bool zeroForOne) private pure returns (int24) {
+    function getUsableTick(int24 tick, int24 tickSpacing, bool zeroForOne)
+        private
+        pure
+        returns (int24 low, int24 high)
+    {
         // E.g. tickSpacing = 60, tick = -100
         // closest usable tick rounded-down will be -120
 
@@ -345,10 +370,14 @@ contract TakeProfitsHook is BaseHook, ERC1155 {
         // if tick > 0, `intervals` is fine as it is
         if (tick < 0 && tick % tickSpacing != 0) intervals--; // round towards negative infinity
 
-        if (!zeroForOne) intervals++;
+        if (!zeroForOne) intervals++; //ask orders are spreaded on the higher end
 
-        // actual usable tick, then, is intervals * tickSpacing
-        // i.e. -2 * 60 = -120
-        return intervals * tickSpacing;
+        if (zeroForOne) {
+            // for a bid order, we want to `spread` it on the lower end
+            return ((intervals - 1) * tickSpacing, intervals * tickSpacing);
+        } else {
+            //for an ask order, we want to `spread` it on the higher end
+            return (intervals * tickSpacing, (intervals + 1) * tickSpacing);
+        }
     }
 }

@@ -109,12 +109,21 @@ contract TakeProfitsHook is BaseHook, ERC1155 {
     }
 
     // Core Hook External Functions
-    function placeOrder(PoolKey calldata key, int24 tickToSellAt, bool zeroForOne, uint256 inputAmount)
+    function placeLimit(PoolKey calldata key, int24 limitOrderTick, bool zeroForOne, uint256 inputAmount)
         external
         returns (int24)
     {
+        (, int24 currentTick,,) = poolManager.getSlot0(key.toId());
+
+        if (limitOrderTick == currentTick) revert InvalidOrder();
+
+        zeroForOne = limitOrderTick < currentTick;
+
         // Get lower actually usable tick given `tickToSellAt`
-        int24 tick = getLowerUsableTick(tickToSellAt, key.tickSpacing);
+        int24 tick = getUsableTick(limitOrderTick, key.tickSpacing, zeroForOne);
+
+        //TODO: creer intervalle en tick +- 1 (en fonction de zeroForOne)
+
         // Create a pending order
         pendingOrders[key.toId()][tick][zeroForOne] += inputAmount;
 
@@ -325,7 +334,7 @@ contract TakeProfitsHook is BaseHook, ERC1155 {
         return uint256(keccak256(abi.encode(key.toId(), tick, zeroForOne)));
     }
 
-    function getLowerUsableTick(int24 tick, int24 tickSpacing) private pure returns (int24) {
+    function getUsableTick(int24 tick, int24 tickSpacing, bool zeroForOne) private pure returns (int24) {
         // E.g. tickSpacing = 60, tick = -100
         // closest usable tick rounded-down will be -120
 
@@ -335,6 +344,8 @@ contract TakeProfitsHook is BaseHook, ERC1155 {
         // since tick < 0, we round `intervals` down to -2
         // if tick > 0, `intervals` is fine as it is
         if (tick < 0 && tick % tickSpacing != 0) intervals--; // round towards negative infinity
+
+        if (!zeroForOne) intervals++;
 
         // actual usable tick, then, is intervals * tickSpacing
         // i.e. -2 * 60 = -120

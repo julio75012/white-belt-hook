@@ -135,6 +135,19 @@ contract TakeProfitsHook is BaseHook, ERC1155 {
         pendingOrders[key.toId()][tick][zeroForOne] += inputAmount;
         //TODO: get the high or low tick back with a function (using the tickspace)
 
+        poolManager.modifyLiquidity(
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: lowTick,
+                tickUpper: highTick,
+                liquidityDelta: getLiquidity(inputAmount, lowTick, highTick, zeroForOne),
+                salt: bytes32(0)
+            }),
+            ZERO_BYTES
+        );
+
+        //NOTE: I put the liquidity adding before the 'token exchange', making sure it works first.
+
         // Mint claim tokens to user equal to their `inputAmount`
         uint256 positionId = getPositionId(key, tick, zeroForOne);
         claimTokensSupply[positionId] += inputAmount;
@@ -144,25 +157,6 @@ contract TakeProfitsHook is BaseHook, ERC1155 {
         // and request a transfer of those tokens to the hook contract
         address sellToken = zeroForOne ? Currency.unwrap(key.currency0) : Currency.unwrap(key.currency1);
         IERC20(sellToken).transferFrom(msg.sender, address(this), inputAmount);
-
-        int256 liquidity;
-
-        if (zeroForOne) {
-            liquidity = LiquidityAmounts.getLiquidityForAmount0(lowTick, highTick, inputAmount);
-        } else {
-            liquidity = LiquidityAmounts.getLiquidityForAmount1(lowTick, highTick, inputAmount);
-        }
-
-        poolManager.modifyLiquidity(
-            key,
-            IPoolManager.ModifyLiquidityParams({
-                tickLower: lowTick,
-                tickUpper: highTick,
-                liquidityDelta: liquidity,
-                salt: bytes32(0)
-            }),
-            ZERO_BYTES
-        );
 
         // Return the tick at which the order was actually placed
         return (lowTick, highTick);
@@ -180,6 +174,19 @@ contract TakeProfitsHook is BaseHook, ERC1155 {
         uint256 positionTokens = balanceOf(msg.sender, positionId);
         if (positionTokens < amountToCancel) revert NotEnoughToClaim();
 
+        poolManager.modifyLiquidity(
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: lowTick,
+                tickUpper: highTick,
+                liquidityDelta: -getLiquidity(inputAmount, lowTick, highTick, zeroForOne),
+                salt: bytes32(0)
+            }),
+            ZERO_BYTES
+        );
+
+        //NOTE: I put the liquidity removal before the 'token exchange', making sure it works first.
+
         // Remove their `amountToCancel` worth of position from pending orders
         pendingOrders[key.toId()][tick][zeroForOne] -= amountToCancel;
         // Reduce claim token total supply and burn their share
@@ -188,6 +195,7 @@ contract TakeProfitsHook is BaseHook, ERC1155 {
 
         // Send them their input token
         Currency token = zeroForOne ? key.currency0 : key.currency1;
+
         token.transfer(msg.sender, amountToCancel);
     }
 
@@ -364,6 +372,17 @@ contract TakeProfitsHook is BaseHook, ERC1155 {
         return uint256(keccak256(abi.encode(key.toId(), tick, zeroForOne)));
     }
 
+    function getLiquidity(uint256 inputAmount, int24 lowTick, int24 highTick, bool zeroForOne)
+        private
+        pure
+        returns (int256 liquidity)
+    {
+        if (zeroForOne) {
+            return LiquidityAmounts.getLiquidityForAmount0(lowTick, highTick, inputAmount);
+        }
+        return LiquidityAmounts.getLiquidityForAmount1(lowTick, highTick, inputAmount);
+    }
+
     function getUsableTick(int24 tick, int24 tickSpacing, bool zeroForOne)
         private
         pure
@@ -381,12 +400,15 @@ contract TakeProfitsHook is BaseHook, ERC1155 {
 
         if (!zeroForOne) intervals++; //ask orders are spreaded on the higher end
 
+        //The purpose of this variable is just to save one multiplication later...
+        int24 intervalsTimesTickSpacing = intervals * tickSpacing;
+
         if (zeroForOne) {
             // for a bid order, we want to `spread` it on the lower end
-            return ((intervals - 1) * tickSpacing, intervals * tickSpacing);
+            return (intervalsTimesTickSpacing - tickSpacing, intervalsTimesTickSpacing);
         } else {
             //for an ask order, we want to `spread` it on the higher end
-            return (intervals * tickSpacing, (intervals + 1) * tickSpacing);
+            return (intervalsTimesTickSpacing, intervalsTimesTickSpacing + tickSpacing);
         }
     }
 }

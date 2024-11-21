@@ -39,6 +39,8 @@ contract LimitOrderHook is BaseHook, ERC1155 {
     error InvalidOrder();
     error NothingToClaim();
     error NotEnoughToClaim();
+    error FailedToAcquireLock();
+    error CallerNotManager();
 
     // Constructor
     constructor(IPoolManager _manager, string memory _uri) BaseHook(_manager) ERC1155(_uri) {}
@@ -61,6 +63,11 @@ contract LimitOrderHook is BaseHook, ERC1155 {
             afterAddLiquidityReturnDelta: false,
             afterRemoveLiquidityReturnDelta: false
         });
+    }
+
+    struct CallbackData {
+        PoolKey key;
+        IPoolManager.ModifyLiquidityParams params;
     }
 
     function afterInitialize(address, PoolKey calldata key, uint160, int24 tick)
@@ -120,15 +127,14 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         pendingOrders[key.toId()][tick][zeroForOne] += inputAmount;
         //TODO: get the high or low tick back with a function (using the tickspace)
 
-        modifyLiquidityAndSettleBalances(
-            key,
-            IPoolManager.ModifyLiquidityParams({
-                tickLower: lowTick,
-                tickUpper: highTick,
-                liquidityDelta: getLiquidity(inputAmount, lowTick, highTick, zeroForOne),
-                salt: bytes32(0)
-            })
-        );
+        IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
+            tickLower: lowTick,
+            tickUpper: highTick,
+            liquidityDelta: getLiquidity(inputAmount, lowTick, highTick, zeroForOne),
+            salt: bytes32(0)
+        });
+
+        poolManager.unlock(abi.encode(CallbackData(key, params)));
 
         //NOTE: I put the liquidity adding before the 'token exchange', making sure it works first.
 
@@ -272,7 +278,17 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         claimableOutputTokens[positionId] += outputAmount;
     }
 
-    function modifyLiquidityAndSettleBalances(PoolKey calldata key, IPoolManager.ModifyLiquidityParams memory params)
+    function _unlockCallback(bytes calldata rawData) internal override returns (bytes memory) {
+        if (msg.sender != address(poolManager)) revert CallerNotManager();
+
+        CallbackData memory data = abi.decode(rawData, (CallbackData));
+
+        BalanceDelta delta = modifyLiquidityAndSettleBalances(data.key, data.params);
+
+        return abi.encode(delta);
+    }
+
+    function modifyLiquidityAndSettleBalances(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params)
         internal
         returns (BalanceDelta delta)
     {

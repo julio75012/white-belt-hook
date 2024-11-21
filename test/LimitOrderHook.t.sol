@@ -22,6 +22,8 @@ import {TickMath} from "v4-core/libraries/TickMath.sol";
 // Our contracts
 import {LimitOrderHook} from "../src/LimitOrderHook.sol";
 
+import "forge-std/console.sol";
+
 contract LimitOrderHookTest is Test, Deployers {
     // Use the libraries
     using StateLibrary for IPoolManager;
@@ -109,16 +111,22 @@ contract LimitOrderHookTest is Test, Deployers {
         // at tick 100
         int24 tick = 100;
         uint256 amount = 10e18;
-        bool zeroForOne = true;
+        bool zeroForOne = false;
 
         // Note the original balance of token0 we have
         uint256 originalBalance = token0.balanceOfSelf();
+        console.log("Value : ", originalBalance);
+
+        (, int24 currentTick,,) = manager.getSlot0(key.toId());
+        // assertEq(currentTick, 0);
+        console.log("currentTick : ", currentTick);
 
         // Place the order
         (int24 tickLower,) = hook.placeLimitOrder(key, tick, zeroForOne, amount);
 
         // Note the new balance of token0 we have
         uint256 newBalance = token0.balanceOfSelf();
+        console.log(newBalance);
 
         // Since we deployed the pool contract with tick spacing = 60
         // i.e. the tick can only be a multiple of 60

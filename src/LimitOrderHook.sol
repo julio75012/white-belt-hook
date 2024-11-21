@@ -74,9 +74,9 @@ contract LimitOrderHook is BaseHook, ERC1155 {
     }
 
     function afterSwap(
-        address sender, //will be useful to reimburse its gas fee...
+        address, /*sender*/ //will be useful to reimburse its gas fee...
         PoolKey calldata key,
-        IPoolManager.SwapParams calldata params,
+        IPoolManager.SwapParams calldata,
         BalanceDelta,
         bytes calldata
     ) external override onlyPoolManager returns (bytes4, int128) {
@@ -85,7 +85,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         int24 currentTick;
 
         while (tryMore) {
-            (tryMore, currentTick) = tryCancellingLiquidity(key, !params.zeroForOne);
+            (tryMore, currentTick) = tryCancellingLiquidity(key);
         }
 
         // New last known tick for this pool is the tick value

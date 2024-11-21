@@ -20,7 +20,7 @@ import {LiquidityAmounts} from "v4-core/test/utils/LiquidityAmounts.sol";
 
 import {FixedPointMathLib} from "solmate/src/utils/FixedPointMathLib.sol";
 
-contract TakeProfitsHook is BaseHook, ERC1155 {
+contract LimitOrderHook is BaseHook, ERC1155 {
     using StateLibrary for IPoolManager;
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;

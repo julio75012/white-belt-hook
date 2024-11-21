@@ -20,9 +20,9 @@ import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {TickMath} from "v4-core/libraries/TickMath.sol";
 
 // Our contracts
-import {TakeProfitsHook} from "../src/TakeProfitsHook.sol";
+import {LimitOrderHook} from "../src/LimitOrderHook.sol";
 
-contract TakeProfitsHookTest is Test, Deployers {
+contract LimitOrderHookTest is Test, Deployers {
     // Use the libraries
     using StateLibrary for IPoolManager;
     using PoolIdLibrary for PoolKey;
@@ -32,7 +32,7 @@ contract TakeProfitsHookTest is Test, Deployers {
     Currency token0;
     Currency token1;
 
-    TakeProfitsHook hook;
+    LimitOrderHook hook;
 
     function setUp() public {
         // Deploy v4 core contracts
@@ -44,8 +44,8 @@ contract TakeProfitsHookTest is Test, Deployers {
         // Deploy our hook
         uint160 flags = uint160(Hooks.AFTER_INITIALIZE_FLAG | Hooks.AFTER_SWAP_FLAG);
         address hookAddress = address(flags);
-        deployCodeTo("TakeProfitsHook.sol", abi.encode(manager, ""), hookAddress);
-        hook = TakeProfitsHook(hookAddress);
+        deployCodeTo("LimitOrderHook.sol", abi.encode(manager, ""), hookAddress);
+        hook = LimitOrderHook(hookAddress);
 
         // Approve our hook address to spend these tokens as well
         MockERC20(Currency.unwrap(token0)).approve(address(hook), type(uint256).max);

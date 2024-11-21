@@ -115,7 +115,7 @@ contract LimitOrderHookTest is Test, Deployers {
         uint256 originalBalance = token0.balanceOfSelf();
 
         // Place the order
-        int24 tickLower = hook.placeOrder(key, tick, zeroForOne, amount);
+        (int24 tickLower, int24 tickHigher) = hook.placeLimitOrder(key, tick, zeroForOne, amount);
 
         // Note the new balance of token0 we have
         uint256 newBalance = token0.balanceOfSelf();
@@ -145,7 +145,7 @@ contract LimitOrderHookTest is Test, Deployers {
         bool zeroForOne = true;
 
         uint256 originalBalance = token0.balanceOfSelf();
-        int24 tickLower = hook.placeOrder(key, tick, zeroForOne, amount);
+        (int24 tickLower, int24 tickHigher) = hook.placeLimitOrder(key, tick, zeroForOne, amount);
         uint256 newBalance = token0.balanceOfSelf();
 
         assertEq(tickLower, 60);
@@ -173,7 +173,7 @@ contract LimitOrderHookTest is Test, Deployers {
         bool zeroForOne = true;
 
         // Place our order at tick 100 for 10e18 token0 tokens
-        int24 tickLower = hook.placeOrder(key, tick, zeroForOne, amount);
+        (int24 tickLower, int24 tickHigher) = hook.placeLimitOrder(key, tick, zeroForOne, amount);
 
         // Do a separate swap from oneForZero to make tick go up
         // Sell 1e18 token1 tokens for token0 tokens
@@ -214,7 +214,7 @@ contract LimitOrderHookTest is Test, Deployers {
         bool zeroForOne = false;
 
         // Place our order at tick -100 for 10e18 token1 tokens
-        int24 tickLower = hook.placeOrder(key, tick, zeroForOne, amount);
+        (int24 tickLower, int24 tickHigher) = hook.placeLimitOrder(key, tick, zeroForOne, amount);
 
         // Do a separate swap from zeroForOne to make tick go down
         // Sell 1e18 token0 tokens for token1 tokens
@@ -254,8 +254,8 @@ contract LimitOrderHookTest is Test, Deployers {
         // Setup two zeroForOne orders at ticks 0 and 60
         uint256 amount = 0.01 ether;
 
-        hook.placeOrder(key, 0, true, amount);
-        hook.placeOrder(key, 60, true, amount);
+        hook.placeLimitOrder(key, 0, true, amount);
+        hook.placeLimitOrder(key, 60, true, amount);
 
         (, int24 currentTick,,) = manager.getSlot0(key.toId());
         assertEq(currentTick, 0);
@@ -289,8 +289,8 @@ contract LimitOrderHookTest is Test, Deployers {
         // Setup two zeroForOne orders at ticks 0 and 60
         uint256 amount = 0.01 ether;
 
-        hook.placeOrder(key, 0, true, amount);
-        hook.placeOrder(key, 60, true, amount);
+        hook.placeLimitOrder(key, 0, true, amount);
+        hook.placeLimitOrder(key, 60, true, amount);
 
         // Do a swap to make tick increase
         IPoolManager.SwapParams memory params = IPoolManager.SwapParams({

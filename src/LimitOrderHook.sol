@@ -16,7 +16,8 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {TickMath} from "v4-core/libraries/TickMath.sol";
 import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
-import {LiquidityAmounts} from "v4-core/test/utils/LiquidityAmounts.sol";
+import {LiquidityAmounts} from "v4-core-test/utils/LiquidityAmounts.sol";
+import {Constants} from "v4-core-test/utils/Constants.sol";
 
 import {FixedPointMathLib} from "solmate/src/utils/FixedPointMathLib.sol";
 
@@ -73,7 +74,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
     }
 
     function afterSwap(
-        address sender,
+        address sender, //will be useful to reimburse its gas fee...
         PoolKey calldata key,
         IPoolManager.SwapParams calldata params,
         BalanceDelta,
@@ -110,7 +111,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         }
 
         // Get the smallest tick range on which we will add liquidity
-        (int24 lowTick, int24 highTick) = getUsableTick(limitOrderTick, key.tickSpacing, zeroForOne);
+        (lowTick, highTick) = getTickSpaceSegment(limitOrderTick, key.tickSpacing, zeroForOne);
 
         //we store here the tick price that a swap needs to fully cross in order to cancel the liquidity
         int24 tick = zeroForOne ? lowTick : highTick;
@@ -124,7 +125,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
             IPoolManager.ModifyLiquidityParams({
                 tickLower: lowTick,
                 tickUpper: highTick,
-                liquidityDelta: getLiquidity(amountToCancel, lowTick, highTick, zeroForOne),
+                liquidityDelta: getLiquidity(inputAmount, lowTick, highTick, zeroForOne),
                 salt: bytes32(0)
             })
         );
@@ -145,9 +146,11 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         return (lowTick, highTick);
     }
 
-    function cancelOrder(PoolKey calldata key, int24 tickToSellAt, bool zeroForOne, uint256 amountToCancel) external {
+    function cancelOrder(PoolKey calldata key, int24 limitOrderTick, bool zeroForOne, uint256 amountToCancel)
+        external
+    {
         // Get the smallest tick range on which we will add liquidity
-        (int24 lowTick, int24 highTick) = getUsableTick(limitOrderTick, key.tickSpacing, zeroForOne);
+        (int24 lowTick, int24 highTick) = getTickSpaceSegment(limitOrderTick, key.tickSpacing, zeroForOne);
 
         //we store here the tick price that a swap needs to fully cross in order to cancel the liquidity
         int24 tick = zeroForOne ? lowTick : highTick;
@@ -181,11 +184,12 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         token.transfer(msg.sender, amountToCancel);
     }
 
-    function redeem(PoolKey calldata key, int24 tickToSellAt, bool zeroForOne, uint256 inputAmountToClaimFor)
+    function redeem(PoolKey calldata key, int24 limitOrderTick, bool zeroForOne, uint256 inputAmountToClaimFor)
         external
     {
         // Get lower actually usable tick for their order
-        int24 tick = getLowerUsableTick(tickToSellAt, key.tickSpacing);
+        (int24 lowTick, int24 highTick) = getTickSpaceSegment(limitOrderTick, key.tickSpacing, zeroForOne);
+        int24 tick = zeroForOne ? lowTick : highTick;
         uint256 positionId = getPositionId(key, tick, zeroForOne);
 
         // If no output tokens can be claimed yet i.e. order hasn't been filled
@@ -215,10 +219,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
     }
 
     // Internal Functions
-    function tryCancellingLiquidity(PoolKey calldata key, bool executeZeroForOne)
-        internal
-        returns (bool tryMore, int24 newTick)
-    {
+    function tryCancellingLiquidity(PoolKey calldata key) internal returns (bool tryMore, int24 newTick) {
         (, int24 currentTick,,) = poolManager.getSlot0(key.toId());
         int24 lastTick = lastTicks[key.toId()];
 
@@ -256,12 +257,13 @@ contract LimitOrderHook is BaseHook, ERC1155 {
             IPoolManager.ModifyLiquidityParams({
                 tickLower: lowTick,
                 tickUpper: highTick,
-                liquidityDelta: -getLiquidity(amountToCancel, lowTick, highTick, zeroForOne),
+                liquidityDelta: -getLiquidity(inputAmount, lowTick, highTick, zeroForOne),
                 salt: bytes32(0)
             })
         );
 
         // `inputAmount` has been deducted from this position
+        int24 tick = zeroForOne ? lowTick : highTick;
         pendingOrders[key.toId()][tick][zeroForOne] -= inputAmount;
         uint256 positionId = getPositionId(key, tick, zeroForOne);
         uint256 outputAmount = zeroForOne ? uint256(int256(delta.amount1())) : uint256(int256(delta.amount0()));
@@ -270,12 +272,12 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         claimableOutputTokens[positionId] += outputAmount;
     }
 
-    function modifyLiquidityAndSettleBalances(PoolKey calldata key, IPoolManager.SwapParams memory params)
+    function modifyLiquidityAndSettleBalances(PoolKey calldata key, IPoolManager.ModifyLiquidityParams memory params)
         internal
-        returns (BalanceDelta)
+        returns (BalanceDelta delta)
     {
         // Conduct the swap inside the Pool Manager
-        (delta,) = poolManager.modifyLiquidity(key, params, ZERO_BYTES);
+        (delta,) = poolManager.modifyLiquidity(key, params, Constants.ZERO_BYTES);
 
         if (delta.amount0() < 0) {
             _settle(key.currency0, uint128(-delta.amount0()));
@@ -287,8 +289,6 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         } else if (delta.amount1() < 0) {
             _settle(key.currency1, uint128(-delta.amount1()));
         }
-
-        return delta;
     }
 
     function _settle(Currency currency, uint128 amount) internal {
@@ -313,13 +313,16 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         pure
         returns (int256 liquidity)
     {
+        uint160 sqrtPriceAX96 = TickMath.getSqrtPriceAtTick(lowTick);
+        uint160 sqrtPriceBX96 = TickMath.getSqrtPriceAtTick(highTick);
+
         if (zeroForOne) {
-            return LiquidityAmounts.getLiquidityForAmount0(lowTick, highTick, inputAmount);
+            return int256(uint256(LiquidityAmounts.getLiquidityForAmount0(sqrtPriceAX96, sqrtPriceBX96, inputAmount)));
         }
-        return LiquidityAmounts.getLiquidityForAmount1(lowTick, highTick, inputAmount);
+        return int256(uint256(LiquidityAmounts.getLiquidityForAmount1(sqrtPriceAX96, sqrtPriceBX96, inputAmount)));
     }
 
-    function getUsableTick(int24 tick, int24 tickSpacing, bool zeroForOne)
+    function getTickSpaceSegment(int24 tick, int24 tickSpacing, bool zeroForOne)
         private
         pure
         returns (int24 low, int24 high)

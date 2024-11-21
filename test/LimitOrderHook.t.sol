@@ -110,12 +110,14 @@ contract LimitOrderHookTest is Test, Deployers {
         // for 10e18 token0 tokens
         // at tick 100
         int24 tick = 100;
-        uint256 amount = 10e18;
+        uint256 amount = 1e18;
         bool zeroForOne = false;
 
         // Note the original balance of token0 we have
-        uint256 originalBalance = token0.balanceOfSelf();
-        console.log("Value : ", originalBalance);
+        console.log("Token0 balance:", token0.balanceOfSelf());
+        console.log("Token1 balance:", token1.balanceOfSelf());
+
+        uint256 originalBalance = token1.balanceOfSelf();
 
         (, int24 currentTick,,) = manager.getSlot0(key.toId());
         // assertEq(currentTick, 0);

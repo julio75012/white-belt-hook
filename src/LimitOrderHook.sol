@@ -21,6 +21,8 @@ import {Constants} from "v4-core-test/utils/Constants.sol";
 
 import {FixedPointMathLib} from "solmate/src/utils/FixedPointMathLib.sol";
 
+import "forge-std/console.sol";
+
 contract LimitOrderHook is BaseHook, ERC1155 {
     using StateLibrary for IPoolManager;
     using PoolIdLibrary for PoolKey;
@@ -296,13 +298,18 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         (delta,) = poolManager.modifyLiquidity(key, params, Constants.ZERO_BYTES);
 
         if (delta.amount0() < 0) {
+            console.log("delta.amount0() < 0");
+            console.log(delta.amount0());
             _settle(key.currency0, uint128(-delta.amount0()));
         } else if (delta.amount0() > 0) {
+            console.log("delta.amount0() > 0");
             _take(key.currency0, uint128(delta.amount0()));
         }
         if (delta.amount1() > 0) {
+            console.log("delta.amount1() < 0");
             _take(key.currency1, uint128(delta.amount1()));
         } else if (delta.amount1() < 0) {
+            console.log("delta.amount1() > 0");
             _settle(key.currency1, uint128(-delta.amount1()));
         }
     }

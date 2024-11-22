@@ -183,11 +183,6 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         // Reduce claim token total supply and burn their share
         claimTokensSupply[positionId] -= amountToCancel;
         _burn(msg.sender, positionId, amountToCancel);
-
-        // Send them their input token
-        Currency token = zeroForOne ? key.currency0 : key.currency1;
-
-        token.transfer(msg.sender, amountToCancel);
     }
 
     function redeem(PoolKey calldata key, int24 limitOrderTick, bool zeroForOne, uint256 inputAmountToClaimFor)
@@ -288,30 +283,6 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         return abi.encode(delta);
     }
 
-    function modifyLiquidityAndSettleBalances(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params)
-        internal
-        returns (BalanceDelta delta)
-    {
-        // Conduct the swap inside the Pool Manager
-        (delta,) = poolManager.modifyLiquidity(key, params, Constants.ZERO_BYTES);
-        console.log("msg.sender 4:", msg.sender);
-
-        if (delta.amount0() < 0) {
-            console.log("delta.amount0() < 0");
-            _settle(key.currency0, uint128(-delta.amount0()));
-        } else if (delta.amount0() > 0) {
-            console.log("delta.amount0() > 0");
-            _take(key.currency0, uint128(delta.amount0()));
-        }
-        if (delta.amount1() > 0) {
-            console.log("delta.amount1() > 0");
-            _take(key.currency1, uint128(delta.amount1()));
-        } else if (delta.amount1() < 0) {
-            console.log("delta.amount1() < 0");
-            _settle(key.currency1, uint128(-delta.amount1()));
-        }
-    }
-
     function modifyLiquidityAndSettleBalances(
         PoolKey memory key,
         IPoolManager.ModifyLiquidityParams memory params,
@@ -319,37 +290,34 @@ contract LimitOrderHook is BaseHook, ERC1155 {
     ) internal returns (BalanceDelta delta) {
         // Conduct the swap inside the Pool Manager
         (delta,) = poolManager.modifyLiquidity(key, params, Constants.ZERO_BYTES);
-        console.log("msg.sender 2:", msg.sender);
-        console.log("msg.sender 3:", sender);
 
         if (delta.amount0() < 0) {
-            console.log("delta.amount0() < 0");
-            console.log(delta.amount0());
             _settle(key.currency0, uint128(-delta.amount0()), sender);
         } else if (delta.amount0() > 0) {
-            console.log("delta.amount0() > 0");
             _take(key.currency0, uint128(delta.amount0()));
         }
         if (delta.amount1() > 0) {
-            console.log("delta.amount1() > 0");
             _take(key.currency1, uint128(delta.amount1()));
         } else if (delta.amount1() < 0) {
-            console.log("delta.amount1() < 0");
             _settle(key.currency1, uint128(-delta.amount1()), sender);
         }
     }
 
-    function _settle(Currency currency, uint128 amount, address sender) internal {
-        // Transfer tokens to PM and let it know
-        poolManager.sync(currency);
-        IERC20(Currency.unwrap(currency)).transferFrom(sender, address(poolManager), amount);
-        poolManager.settle();
+    function modifyLiquidityAndSettleBalances(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params)
+        internal
+        returns (BalanceDelta)
+    {
+        return modifyLiquidityAndSettleBalances(key, params, address(this));
     }
 
-    function _settle(Currency currency, uint128 amount) internal {
-        // Transfer tokens to PM and let it know
+    // Update _settle function to handle both cases
+    function _settle(Currency currency, uint128 amount, address sender) internal {
         poolManager.sync(currency);
-        currency.transfer(address(poolManager), amount);
+        if (sender == address(this)) {
+            currency.transfer(address(poolManager), amount);
+        } else {
+            IERC20(Currency.unwrap(currency)).transferFrom(sender, address(poolManager), amount);
+        }
         poolManager.settle();
     }
 

@@ -15,6 +15,9 @@ import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {TickMath} from "v4-core/libraries/TickMath.sol";
+import {FullMath} from "v4-core/libraries/FullMath.sol";
+import {FixedPoint96} from "v4-core/libraries//FixedPoint96.sol";
+
 import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 import {LiquidityAmounts} from "v4-core-test/utils/LiquidityAmounts.sol";
 import {Constants} from "v4-core-test/utils/Constants.sol";
@@ -70,6 +73,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
     struct CallbackData {
         PoolKey key;
         IPoolManager.ModifyLiquidityParams params;
+        address sender;
     }
 
     function afterInitialize(address, PoolKey calldata key, uint160, int24 tick)
@@ -112,10 +116,10 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         (, int24 currentTick,,) = poolManager.getSlot0(key.toId());
 
         //checking if the currentTick matches the limitOrderTick and the intention of the user
-        //zeroForOne == true -> the users intends to place a bid order (and bid < mid)
-        //zeroForOne == false -> the users intends to place an ask order (and mid < ask)
+        //zeroForOne == true -> the users intends to place a ask order (and mid < ask)
+        //zeroForOne == false -> the users intends to place an ask order (and bid < mid)
         //limitOrderTick == currentTick also, this case is invalid
-        if ((zeroForOne && currentTick <= limitOrderTick) || (!zeroForOne && limitOrderTick <= currentTick)) {
+        if ((zeroForOne && limitOrderTick <= currentTick) || (!zeroForOne && currentTick <= limitOrderTick)) {
             revert InvalidOrder();
         }
 
@@ -123,7 +127,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         (lowTick, highTick) = getTickSpaceSegment(limitOrderTick, key.tickSpacing, zeroForOne);
 
         //we store here the tick price that a swap needs to fully cross in order to cancel the liquidity
-        int24 tick = zeroForOne ? lowTick : highTick;
+        int24 tick = zeroForOne ? highTick : lowTick;
 
         // Create a pending order
         pendingOrders[key.toId()][tick][zeroForOne] += inputAmount;
@@ -136,19 +140,14 @@ contract LimitOrderHook is BaseHook, ERC1155 {
             salt: bytes32(0)
         });
 
-        poolManager.unlock(abi.encode(CallbackData(key, params)));
+        console.log("msg.sender 1:", msg.sender);
 
-        //NOTE: I put the liquidity adding before the 'token exchange', making sure it works first.
+        poolManager.unlock(abi.encode(CallbackData(key, params, msg.sender)));
 
         // Mint claim tokens to user equal to their `inputAmount`
         uint256 positionId = getPositionId(key, tick, zeroForOne);
         claimTokensSupply[positionId] += inputAmount;
         _mint(msg.sender, positionId, inputAmount, "");
-
-        // Depending on direction of swap, we select the proper input token
-        // and request a transfer of those tokens to the hook contract
-        address sellToken = zeroForOne ? Currency.unwrap(key.currency0) : Currency.unwrap(key.currency1);
-        IERC20(sellToken).transferFrom(msg.sender, address(this), inputAmount);
 
         // Return the tick at which the order was actually placed
         return (lowTick, highTick);
@@ -168,15 +167,14 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         uint256 positionTokens = balanceOf(msg.sender, positionId);
         if (positionTokens < amountToCancel) revert NotEnoughToClaim();
 
-        modifyLiquidityAndSettleBalances(
-            key,
-            IPoolManager.ModifyLiquidityParams({
-                tickLower: lowTick,
-                tickUpper: highTick,
-                liquidityDelta: -getLiquidity(amountToCancel, lowTick, highTick, zeroForOne),
-                salt: bytes32(0)
-            })
-        );
+        IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
+            tickLower: lowTick,
+            tickUpper: highTick,
+            liquidityDelta: -getLiquidity(amountToCancel, lowTick, highTick, zeroForOne),
+            salt: bytes32(0)
+        });
+
+        poolManager.unlock(abi.encode(CallbackData(key, params, msg.sender)));
 
         //NOTE: I put the liquidity removal before the 'token exchange', making sure it works first.
 
@@ -285,7 +283,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
 
         CallbackData memory data = abi.decode(rawData, (CallbackData));
 
-        BalanceDelta delta = modifyLiquidityAndSettleBalances(data.key, data.params);
+        BalanceDelta delta = modifyLiquidityAndSettleBalances(data.key, data.params, data.sender);
 
         return abi.encode(delta);
     }
@@ -296,22 +294,56 @@ contract LimitOrderHook is BaseHook, ERC1155 {
     {
         // Conduct the swap inside the Pool Manager
         (delta,) = poolManager.modifyLiquidity(key, params, Constants.ZERO_BYTES);
+        console.log("msg.sender 4:", msg.sender);
 
         if (delta.amount0() < 0) {
             console.log("delta.amount0() < 0");
-            console.log(delta.amount0());
             _settle(key.currency0, uint128(-delta.amount0()));
         } else if (delta.amount0() > 0) {
             console.log("delta.amount0() > 0");
             _take(key.currency0, uint128(delta.amount0()));
         }
         if (delta.amount1() > 0) {
-            console.log("delta.amount1() < 0");
+            console.log("delta.amount1() > 0");
             _take(key.currency1, uint128(delta.amount1()));
         } else if (delta.amount1() < 0) {
-            console.log("delta.amount1() > 0");
+            console.log("delta.amount1() < 0");
             _settle(key.currency1, uint128(-delta.amount1()));
         }
+    }
+
+    function modifyLiquidityAndSettleBalances(
+        PoolKey memory key,
+        IPoolManager.ModifyLiquidityParams memory params,
+        address sender
+    ) internal returns (BalanceDelta delta) {
+        // Conduct the swap inside the Pool Manager
+        (delta,) = poolManager.modifyLiquidity(key, params, Constants.ZERO_BYTES);
+        console.log("msg.sender 2:", msg.sender);
+        console.log("msg.sender 3:", sender);
+
+        if (delta.amount0() < 0) {
+            console.log("delta.amount0() < 0");
+            console.log(delta.amount0());
+            _settle(key.currency0, uint128(-delta.amount0()), sender);
+        } else if (delta.amount0() > 0) {
+            console.log("delta.amount0() > 0");
+            _take(key.currency0, uint128(delta.amount0()));
+        }
+        if (delta.amount1() > 0) {
+            console.log("delta.amount1() > 0");
+            _take(key.currency1, uint128(delta.amount1()));
+        } else if (delta.amount1() < 0) {
+            console.log("delta.amount1() < 0");
+            _settle(key.currency1, uint128(-delta.amount1()), sender);
+        }
+    }
+
+    function _settle(Currency currency, uint128 amount, address sender) internal {
+        // Transfer tokens to PM and let it know
+        poolManager.sync(currency);
+        IERC20(Currency.unwrap(currency)).transferFrom(sender, address(poolManager), amount);
+        poolManager.settle();
     }
 
     function _settle(Currency currency, uint128 amount) internal {
@@ -340,9 +372,10 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         uint160 sqrtPriceBX96 = TickMath.getSqrtPriceAtTick(highTick);
 
         if (zeroForOne) {
-            return int256(uint256(LiquidityAmounts.getLiquidityForAmount0(sqrtPriceAX96, sqrtPriceBX96, inputAmount)));
+            uint256 intermediate = FullMath.mulDiv(sqrtPriceAX96, sqrtPriceBX96, FixedPoint96.Q96);
+            return int256(FullMath.mulDiv(inputAmount, intermediate, sqrtPriceBX96 - sqrtPriceAX96));
         }
-        return int256(uint256(LiquidityAmounts.getLiquidityForAmount1(sqrtPriceAX96, sqrtPriceBX96, inputAmount)));
+        return int256(FullMath.mulDiv(inputAmount, FixedPoint96.Q96, sqrtPriceBX96 - sqrtPriceAX96));
     }
 
     function getTickSpaceSegment(int24 tick, int24 tickSpacing, bool zeroForOne)
@@ -360,17 +393,17 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         // if tick > 0, `intervals` is fine as it is
         if (tick < 0 && tick % tickSpacing != 0) intervals--; // round towards negative infinity
 
-        if (!zeroForOne) intervals++; //ask orders are spreaded on the higher end
+        if (zeroForOne && tick % tickSpacing != 0) intervals++; //ask orders are spreaded on the higher end
 
         //The purpose of this variable is just to save one multiplication later...
         int24 intervalsTimesTickSpacing = intervals * tickSpacing;
 
         if (zeroForOne) {
             // for a bid order, we want to `spread` it on the lower end
-            return (intervalsTimesTickSpacing - tickSpacing, intervalsTimesTickSpacing);
+            return (intervalsTimesTickSpacing, intervalsTimesTickSpacing + tickSpacing);
         } else {
             //for an ask order, we want to `spread` it on the higher end
-            return (intervalsTimesTickSpacing, intervalsTimesTickSpacing + tickSpacing);
+            return (intervalsTimesTickSpacing - tickSpacing, intervalsTimesTickSpacing);
         }
     }
 }

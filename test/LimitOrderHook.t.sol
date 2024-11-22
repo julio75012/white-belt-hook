@@ -54,7 +54,7 @@ contract LimitOrderHookTest is Test, Deployers {
         MockERC20(Currency.unwrap(token1)).approve(address(hook), type(uint256).max);
 
         // Initialize a pool with these two tokens
-        (key,) = initPool(token0, token1, hook, 3000, SQRT_PRICE_1_1);
+        (key,) = initPool(token0, token1, hook, 3000, SQRT_PRICE_1_2);
 
         // Add initial liquidity to the pool
 
@@ -105,35 +105,66 @@ contract LimitOrderHookTest is Test, Deployers {
         return this.onERC1155BatchReceived.selector;
     }
 
-    function test_placeOrder() public {
+    function test_placeSellOrder() public {
         // Place a zeroForOne take-profit order
-        // for 10e18 token0 tokens
-        // at tick 100
-        int24 tick = 100;
-        uint256 amount = 1e18;
-        bool zeroForOne = false;
+        // for 10e19 token0 tokens
+        // at tick 3000
+        int24 tick = 3000;
+        uint256 amount = 1e19;
+        bool zeroForOne = true;
 
-        // Note the original balance of token0 we have
-        console.log("Token0 balance:", token0.balanceOfSelf());
-        console.log("Token1 balance:", token1.balanceOfSelf());
-
-        uint256 originalBalance = token1.balanceOfSelf();
+        uint256 originalBalance = token0.balanceOfSelf();
 
         (, int24 currentTick,,) = manager.getSlot0(key.toId());
-        // assertEq(currentTick, 0);
-        console.log("currentTick : ", currentTick);
+        //midprice is at -6932 ticks (because pool is initiated with SQRT_PRICE_1_2)
+        assertEq(currentTick, -6932);
 
         // Place the order
-        (int24 tickLower,) = hook.placeLimitOrder(key, tick, zeroForOne, amount);
+        (int24 tickLower, int24 tickHigher) = hook.placeLimitOrder(key, tick, zeroForOne, amount);
 
         // Note the new balance of token0 we have
         uint256 newBalance = token0.balanceOfSelf();
         console.log(newBalance);
 
-        // Since we deployed the pool contract with tick spacing = 60
-        // i.e. the tick can only be a multiple of 60
-        // the tickLower should be 60 since we placed an order at tick 100
-        assertEq(tickLower, 60);
+        assertEq(tickLower, 3000);
+        assertEq(tickHigher, 3060);
+
+        // Ensure that our balance of token0 was reduced by `amount` tokens
+        assertEq(originalBalance - newBalance, amount);
+
+        // Check the balance of ERC-1155 tokens we received
+        uint256 positionId = hook.getPositionId(key, tickHigher, zeroForOne);
+        uint256 tokenBalance = hook.balanceOf(address(this), positionId);
+
+        // Ensure that we were, in fact, given ERC-1155 tokens for the order
+        // equal to the `amount` of token0 tokens we placed the order for
+        assertTrue(positionId != 0);
+        assertEq(tokenBalance, amount);
+    }
+
+    function test_placeBuyOrder() public {
+        // Place a zeroForOne take-profit order
+        // for 10e19 token0 tokens
+        // at tick -6940
+        int24 tick = -6940;
+        uint256 amount = 1e19;
+        bool zeroForOne = false;
+
+        uint256 originalBalance = token1.balanceOfSelf();
+
+        (, int24 currentTick,,) = manager.getSlot0(key.toId());
+        //midprice is at -6932 ticks (because pool is initiated with SQRT_PRICE_1_2)
+        assertEq(currentTick, -6932);
+
+        // Place the order
+        (int24 tickLower, int24 tickHigher) = hook.placeLimitOrder(key, tick, zeroForOne, amount);
+
+        // Note the new balance of token0 we have
+        uint256 newBalance = token1.balanceOfSelf();
+        console.log(newBalance);
+
+        assertEq(tickLower, -7020);
+        assertEq(tickHigher, -6960);
 
         // Ensure that our balance of token0 was reduced by `amount` tokens
         assertEq(originalBalance - newBalance, amount);

@@ -160,7 +160,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         (int24 lowTick, int24 highTick) = getTickSpaceSegment(limitOrderTick, key.tickSpacing, zeroForOne);
 
         //we store here the tick price that a swap needs to fully cross in order to cancel the liquidity
-        int24 tick = zeroForOne ? lowTick : highTick;
+        int24 tick = zeroForOne ? highTick : lowTick;
         uint256 positionId = getPositionId(key, tick, zeroForOne);
 
         // Check how many claim tokens they have for this position
@@ -288,16 +288,22 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         IPoolManager.ModifyLiquidityParams memory params,
         address sender
     ) internal returns (BalanceDelta delta) {
+        BalanceDelta fee;
         // Conduct the swap inside the Pool Manager
-        (delta,) = poolManager.modifyLiquidity(key, params, Constants.ZERO_BYTES);
+        (delta, fee) = poolManager.modifyLiquidity(key, params, Constants.ZERO_BYTES);
+
+        console.log("fee.amount0(): ", fee.amount0());
+        console.log("fee.amount1(): ", fee.amount1());
 
         if (delta.amount0() < 0) {
+            console.log("delta.amount0() < 0 :", delta.amount0());
             _settle(key.currency0, uint128(-delta.amount0()), sender);
         } else if (delta.amount0() > 0) {
-            _take(key.currency0, uint128(delta.amount0()));
+            console.log("delta.amount0() > 0 :", delta.amount0());
+            _take(key.currency0, uint128(delta.amount0()), sender);
         }
         if (delta.amount1() > 0) {
-            _take(key.currency1, uint128(delta.amount1()));
+            _take(key.currency1, uint128(delta.amount1()), sender);
         } else if (delta.amount1() < 0) {
             _settle(key.currency1, uint128(-delta.amount1()), sender);
         }
@@ -321,9 +327,9 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         poolManager.settle();
     }
 
-    function _take(Currency currency, uint128 amount) internal {
+    function _take(Currency currency, uint128 amount, address sender) internal {
         // Take tokens out of PM to our hook contract
-        poolManager.take(currency, address(this), amount);
+        poolManager.take(currency, sender, amount);
     }
 
     // Helper Functions

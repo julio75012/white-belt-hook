@@ -36,7 +36,8 @@ contract LimitOrderHook is BaseHook, ERC1155 {
     using StructuredLinkedList for StructuredLinkedList.List;
 
     //Constant
-    uint256 private constant TICK_OFFSET = 887273;
+    int256 private constant TICK_OFFSET_256 = 887273;
+    int24 private constant TICK_OFFSET_24 = 887273;
 
     // Storage
     mapping(PoolId poolId => int24 lastTick) public lastTicks;
@@ -136,13 +137,17 @@ contract LimitOrderHook is BaseHook, ERC1155 {
 
         // Create a pending order
         pendingOrders[key.toId()][tick][zeroForOne] += inputAmount;
+        console.log("ok1", tick);
 
-        uint256 sortedTick = uint256(int256(tick)) + TICK_OFFSET;
+        uint256 sortedTick = uint256(int256(tick) + TICK_OFFSET_256);
+        console.log("ok2");
         StructuredLinkedList.List storage list = zeroForOne ? asks[key.toId()] : bids[key.toId()];
+        console.log("ok3");
         if (!list.nodeExists(sortedTick)) {
             uint256 tickToInsertAfter = list.getSortedSpot(sortedTick);
             list.insertAfter(tickToInsertAfter, sortedTick);
         }
+        console.log("ok4");
         IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
             tickLower: lowTick,
             tickUpper: highTick,
@@ -234,7 +239,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         // Get current and last tick state
         (, int24 currentTick,,) = poolManager.getSlot0(key.toId());
         int24 lastTick = lastTicks[key.toId()];
-        uint256 currentSortedTick = uint256(int256(currentTick)) + TICK_OFFSET;
+        uint256 currentSortedTick = uint256(int256(currentTick) + TICK_OFFSET_256);
 
         // Determine if price increased and select appropriate order book
         bool isPriceIncreased = currentTick > lastTick;
@@ -255,7 +260,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
             uint256 rawTick = isPriceIncreased
                 ? orderBook.popFront() // Pop lowest ask
                 : orderBook.popBack(); // Pop highest bid
-            int24 storedTick = int24(uint24(rawTick - TICK_OFFSET));
+            int24 storedTick = int24(uint24(rawTick)) - TICK_OFFSET_24;
             uint256 inputAmount = pendingOrders[key.toId()][storedTick][isPriceIncreased];
 
             // Calculate tick range and cancel liquidity

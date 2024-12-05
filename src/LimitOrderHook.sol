@@ -151,8 +151,6 @@ contract LimitOrderHook is BaseHook, ERC1155 {
             salt: bytes32(0)
         });
 
-        console.log("msg.sender 1:", msg.sender);
-
         poolManager.unlock(abi.encode(CallbackData(key, params, msg.sender)));
 
         // Mint claim tokens to user equal to their `inputAmount`
@@ -241,17 +239,11 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         bool isPriceIncreased = currentTick > lastTick;
         StructuredLinkedList.List storage orderBook = isPriceIncreased ? asks[key.toId()] : bids[key.toId()];
 
-        console.log("ok tryCancellingLiquidity");
-
         while (true) {
             // Get next order to process
             (bool exists, uint256 nextOrderTick) = isPriceIncreased
                 ? orderBook.getNextNode(0) // Get lowest ask
                 : orderBook.getPreviousNode(0); // Get highest bid
-
-            console.log("nextOrderTick: ", nextOrderTick);
-            console.log("currentSortedTick: ", currentSortedTick);
-            console.log("isPriceIncreased: ", isPriceIncreased);
 
             // Exit if no more orders or current price hasn't crossed order price
             if (!exists || nextOrderTick == 0) break;
@@ -277,7 +269,6 @@ contract LimitOrderHook is BaseHook, ERC1155 {
                 isPriceIncreased, // zeroForOne is opposite of price increase
                 inputAmount
             );
-            console.log("ok tryCancellingLiquidity 2");
         }
     }
 
@@ -297,17 +288,12 @@ contract LimitOrderHook is BaseHook, ERC1155 {
 
         // `inputAmount` has been deducted from this position
         int24 tick = zeroForOne ? highTick : lowTick;
-        console.log("in pendingOrders:", pendingOrders[key.toId()][tick][zeroForOne]);
-        console.log("input amount:", inputAmount);
         pendingOrders[key.toId()][tick][zeroForOne] -= inputAmount;
-        console.log("ok tryCancellingLiquidity 3");
         uint256 positionId = getPositionId(key, tick, zeroForOne);
-        console.log("ok tryCancellingLiquidity 4");
         uint256 outputAmount = zeroForOne ? uint256(int256(delta.amount1())) : uint256(int256(delta.amount0()));
 
         // `outputAmount` worth of tokens now can be claimed/redeemed by position holders
         claimableOutputTokens[positionId] += outputAmount;
-        console.log("ok tryCancellingLiquidity 5");
     }
 
     function _unlockCallback(bytes calldata rawData) internal override returns (bytes memory) {
@@ -329,22 +315,14 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         // Conduct the swap inside the Pool Manager
         (delta, fee) = poolManager.modifyLiquidity(key, params, Constants.ZERO_BYTES);
 
-        console.log("fee.amount0(): ", fee.amount0());
-        console.log("fee.amount1(): ", fee.amount1());
-
         if (delta.amount0() < 0) {
-            console.log("delta.amount0() < 0 :", delta.amount0());
             _settle(key.currency0, uint128(-delta.amount0()), sender);
         } else if (delta.amount0() > 0) {
-            console.log("delta.amount0() > 0 :", delta.amount0());
             _take(key.currency0, uint128(delta.amount0()), sender);
         }
         if (delta.amount1() > 0) {
-            console.log("delta.amount1() > 0 :", delta.amount1());
             _take(key.currency1, uint128(delta.amount1()), sender);
-            console.log("ok");
         } else if (delta.amount1() < 0) {
-            console.log("delta.amount1() < 0 :", delta.amount1());
             _settle(key.currency1, uint128(-delta.amount1()), sender);
         }
     }

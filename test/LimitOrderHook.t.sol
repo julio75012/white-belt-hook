@@ -209,17 +209,18 @@ contract LimitOrderHookTest is Test, Deployers {
         assertEq(tokenBalance, 0);
     }
 
-    struct OrderParams {
+    struct LimitOrderParams {
         int24 tick;
         uint256 amount;
         bool zeroForOne;
     }
 
     function test_orderExecute_zeroForOne() public {
-        OrderParams memory params = OrderParams({tick: -6930, amount: 1 ether, zeroForOne: true});
+        OrderParams memory limitOrderparams = LimitOrderParams({tick: -6930, amount: 1 ether, zeroForOne: true});
 
         // Place our order at tick -6935 for 10e18 token0 tokens
-        (int24 tickLower, int24 tickHigher) = hook.placeLimitOrder(key, params.tick, params.zeroForOne, params.amount);
+        (int24 tickLower, int24 tickHigher) =
+            hook.placeLimitOrder(key, limitOrderparams.tick, limitOrderparams.zeroForOne, limitOrderparams.amount);
 
         (, int24 currentTick,,) = manager.getSlot0(key.toId());
         //midprice is at -6932 ticks (because pool is initiated with SQRT_PRICE_1_2)
@@ -228,7 +229,7 @@ contract LimitOrderHookTest is Test, Deployers {
         // Do a separate swap from oneForZero to make tick go up
         // Sell 1e18 token1 tokens for token0 tokens
         IPoolManager.SwapParams memory swapParams = IPoolManager.SwapParams({
-            zeroForOne: !params.zeroForOne,
+            zeroForOne: !limitOrderparams.zeroForOne,
             amountSpecified: -1 ether,
             sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
@@ -247,22 +248,20 @@ contract LimitOrderHookTest is Test, Deployers {
 
         // Check that the order has been executed
         // by ensuring no amount is left to sell in the pending orders
-        uint256 pendingTokensForPosition = hook.pendingOrders(key.toId(), params.tick, params.zeroForOne);
-        console.log("test1");
+        uint256 pendingTokensForPosition =
+            hook.pendingOrders(key.toId(), limitOrderparams.tick, limitOrderparams.zeroForOne);
         assertEq(pendingTokensForPosition, 0);
 
         // Check that the hook contract has the expected number of token1 tokens ready to redeem
-        uint256 positionId = hook.getPositionId(key, tickLower, params.zeroForOne);
+        uint256 positionId = hook.getPositionId(key, tickHigher, limitOrderparams.zeroForOne);
         uint256 claimableOutputTokens = hook.claimableOutputTokens(positionId);
         uint256 hookContractToken1Balance = token1.balanceOf(address(hook));
-        console.log("test2");
         assertEq(claimableOutputTokens, hookContractToken1Balance);
 
         // Ensure we can redeem the token1 tokens
         uint256 originalToken1Balance = token1.balanceOf(address(this));
-        hook.redeem(key, params.tick, params.zeroForOne, params.amount);
+        hook.redeem(key, limitOrderparams.tick, limitOrderparams.zeroForOne, limitOrderparams.amount);
         uint256 newToken1Balance = token1.balanceOf(address(this));
-        console.log("test3");
         assertEq(newToken1Balance - originalToken1Balance, claimableOutputTokens);
     }
 

@@ -62,8 +62,8 @@ contract LimitOrderHookTest is Test, Deployers {
         modifyLiquidityRouter.modifyLiquidity(
             key,
             IPoolManager.ModifyLiquidityParams({
-                tickLower: -60,
-                tickUpper: 60,
+                tickLower: -6960,
+                tickUpper: -6900,
                 liquidityDelta: 10 ether,
                 salt: bytes32(0)
             }),
@@ -73,8 +73,8 @@ contract LimitOrderHookTest is Test, Deployers {
         modifyLiquidityRouter.modifyLiquidity(
             key,
             IPoolManager.ModifyLiquidityParams({
-                tickLower: -120,
-                tickUpper: 120,
+                tickLower: -7020,
+                tickUpper: -6780,
                 liquidityDelta: 10 ether,
                 salt: bytes32(0)
             }),
@@ -209,44 +209,60 @@ contract LimitOrderHookTest is Test, Deployers {
         assertEq(tokenBalance, 0);
     }
 
-    function test_orderExecute_zeroForOne() public {
-        int24 tick = 100;
-        uint256 amount = 1 ether;
-        bool zeroForOne = true;
+    struct OrderParams {
+        int24 tick;
+        uint256 amount;
+        bool zeroForOne;
+    }
 
-        // Place our order at tick 100 for 10e18 token0 tokens
-        (int24 tickLower,) = hook.placeLimitOrder(key, tick, zeroForOne, amount);
+    function test_orderExecute_zeroForOne() public {
+        OrderParams memory params = OrderParams({tick: -6930, amount: 1 ether, zeroForOne: true});
+
+        // Place our order at tick -6935 for 10e18 token0 tokens
+        (int24 tickLower, int24 tickHigher) = hook.placeLimitOrder(key, params.tick, params.zeroForOne, params.amount);
+
+        (, int24 currentTick,,) = manager.getSlot0(key.toId());
+        //midprice is at -6932 ticks (because pool is initiated with SQRT_PRICE_1_2)
+        assertEq(currentTick, -6932);
 
         // Do a separate swap from oneForZero to make tick go up
         // Sell 1e18 token1 tokens for token0 tokens
-        IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
-            zeroForOne: !zeroForOne,
+        IPoolManager.SwapParams memory swapParams = IPoolManager.SwapParams({
+            zeroForOne: !params.zeroForOne,
             amountSpecified: -1 ether,
             sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
+
+        (, currentTick,,) = manager.getSlot0(key.toId());
+        assertEq(currentTick, -6932);
 
         PoolSwapTest.TestSettings memory testSettings =
             PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
 
         // Conduct the swap - `afterSwap` should also execute our placed order
-        swapRouter.swap(key, params, testSettings, ZERO_BYTES);
+        swapRouter.swap(key, swapParams, testSettings, ZERO_BYTES);
+
+        (, currentTick,,) = manager.getSlot0(key.toId());
+        assertEq(currentTick, -5755);
 
         // Check that the order has been executed
         // by ensuring no amount is left to sell in the pending orders
-        uint256 pendingTokensForPosition = hook.pendingOrders(key.toId(), tick, zeroForOne);
+        uint256 pendingTokensForPosition = hook.pendingOrders(key.toId(), params.tick, params.zeroForOne);
+        console.log("test1");
         assertEq(pendingTokensForPosition, 0);
 
         // Check that the hook contract has the expected number of token1 tokens ready to redeem
-        uint256 positionId = hook.getPositionId(key, tickLower, zeroForOne);
+        uint256 positionId = hook.getPositionId(key, tickLower, params.zeroForOne);
         uint256 claimableOutputTokens = hook.claimableOutputTokens(positionId);
         uint256 hookContractToken1Balance = token1.balanceOf(address(hook));
+        console.log("test2");
         assertEq(claimableOutputTokens, hookContractToken1Balance);
 
         // Ensure we can redeem the token1 tokens
         uint256 originalToken1Balance = token1.balanceOf(address(this));
-        hook.redeem(key, tick, zeroForOne, amount);
+        hook.redeem(key, params.tick, params.zeroForOne, params.amount);
         uint256 newToken1Balance = token1.balanceOf(address(this));
-
+        console.log("test3");
         assertEq(newToken1Balance - originalToken1Balance, claimableOutputTokens);
     }
 

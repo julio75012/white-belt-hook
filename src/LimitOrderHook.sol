@@ -137,17 +137,13 @@ contract LimitOrderHook is BaseHook, ERC1155 {
 
         // Create a pending order
         pendingOrders[key.toId()][tick][zeroForOne] += inputAmount;
-        console.log("ok1", tick);
 
         uint256 sortedTick = uint256(int256(tick) + TICK_OFFSET_256);
-        console.log("ok2");
         StructuredLinkedList.List storage list = zeroForOne ? asks[key.toId()] : bids[key.toId()];
-        console.log("ok3");
         if (!list.nodeExists(sortedTick)) {
             uint256 tickToInsertAfter = list.getSortedSpot(sortedTick);
             list.insertAfter(tickToInsertAfter, sortedTick);
         }
-        console.log("ok4");
         IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
             tickLower: lowTick,
             tickUpper: highTick,
@@ -205,7 +201,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
     {
         // Get lower actually usable tick for their order
         (int24 lowTick, int24 highTick) = getTickSpaceSegment(limitOrderTick, key.tickSpacing, zeroForOne);
-        int24 tick = zeroForOne ? lowTick : highTick;
+        int24 tick = zeroForOne ? highTick : lowTick;
         uint256 positionId = getPositionId(key, tick, zeroForOne);
 
         // If no output tokens can be claimed yet i.e. order hasn't been filled
@@ -245,14 +241,20 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         bool isPriceIncreased = currentTick > lastTick;
         StructuredLinkedList.List storage orderBook = isPriceIncreased ? asks[key.toId()] : bids[key.toId()];
 
+        console.log("ok tryCancellingLiquidity");
+
         while (true) {
             // Get next order to process
             (bool exists, uint256 nextOrderTick) = isPriceIncreased
                 ? orderBook.getNextNode(0) // Get lowest ask
                 : orderBook.getPreviousNode(0); // Get highest bid
 
+            console.log("nextOrderTick: ", nextOrderTick);
+            console.log("currentSortedTick: ", currentSortedTick);
+            console.log("isPriceIncreased: ", isPriceIncreased);
+
             // Exit if no more orders or current price hasn't crossed order price
-            if (!exists) break;
+            if (!exists || nextOrderTick == 0) break;
             if (isPriceIncreased && currentSortedTick < nextOrderTick) break;
             if (!isPriceIncreased && currentSortedTick > nextOrderTick) break;
 
@@ -275,6 +277,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
                 isPriceIncreased, // zeroForOne is opposite of price increase
                 inputAmount
             );
+            console.log("ok tryCancellingLiquidity 2");
         }
     }
 
@@ -293,13 +296,18 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         );
 
         // `inputAmount` has been deducted from this position
-        int24 tick = zeroForOne ? lowTick : highTick;
+        int24 tick = zeroForOne ? highTick : lowTick;
+        console.log("in pendingOrders:", pendingOrders[key.toId()][tick][zeroForOne]);
+        console.log("input amount:", inputAmount);
         pendingOrders[key.toId()][tick][zeroForOne] -= inputAmount;
+        console.log("ok tryCancellingLiquidity 3");
         uint256 positionId = getPositionId(key, tick, zeroForOne);
+        console.log("ok tryCancellingLiquidity 4");
         uint256 outputAmount = zeroForOne ? uint256(int256(delta.amount1())) : uint256(int256(delta.amount0()));
 
         // `outputAmount` worth of tokens now can be claimed/redeemed by position holders
         claimableOutputTokens[positionId] += outputAmount;
+        console.log("ok tryCancellingLiquidity 5");
     }
 
     function _unlockCallback(bytes calldata rawData) internal override returns (bytes memory) {
@@ -332,8 +340,11 @@ contract LimitOrderHook is BaseHook, ERC1155 {
             _take(key.currency0, uint128(delta.amount0()), sender);
         }
         if (delta.amount1() > 0) {
+            console.log("delta.amount1() > 0 :", delta.amount1());
             _take(key.currency1, uint128(delta.amount1()), sender);
+            console.log("ok");
         } else if (delta.amount1() < 0) {
+            console.log("delta.amount1() < 0 :", delta.amount1());
             _settle(key.currency1, uint128(-delta.amount1()), sender);
         }
     }

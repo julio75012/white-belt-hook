@@ -216,7 +216,7 @@ contract LimitOrderHookTest is Test, Deployers {
     }
 
     function test_orderExecute_zeroForOne() public {
-        OrderParams memory limitOrderparams = LimitOrderParams({tick: -6930, amount: 1 ether, zeroForOne: true});
+        LimitOrderParams memory limitOrderparams = LimitOrderParams({tick: -6930, amount: 1 ether, zeroForOne: true});
 
         // Place our order at tick -6935 for 10e18 token0 tokens
         (int24 tickLower, int24 tickHigher) =

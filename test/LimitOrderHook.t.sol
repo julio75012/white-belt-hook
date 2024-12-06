@@ -315,11 +315,11 @@ contract LimitOrderHookTest is Test, Deployers {
         // Setup two zeroForOne orders at ticks 0 and 60
         uint256 amount = 0.01 ether;
 
-        hook.placeLimitOrder(key, 0, true, amount);
-        hook.placeLimitOrder(key, 60, true, amount);
+        (, int24 tickHigher1) = hook.placeLimitOrder(key, -6930, true, amount);
+        (, int24 tickHigher2) = hook.placeLimitOrder(key, -6800, true, amount);
 
         (, int24 currentTick,,) = manager.getSlot0(key.toId());
-        assertEq(currentTick, 0);
+        assertEq(currentTick, -6932);
 
         // Do a swap to make tick increase beyond 60
         IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
@@ -335,11 +335,11 @@ contract LimitOrderHookTest is Test, Deployers {
         // so even though tick increased beyond 60
         // the first order execution will lower it back down
         // so order at tick = 60 will not be executed
-        uint256 tokensLeftToSell = hook.pendingOrders(key.toId(), 0, true);
+        uint256 tokensLeftToSell = hook.pendingOrders(key.toId(), tickHigher1, true);
         assertEq(tokensLeftToSell, 0);
 
         // Order at Tick 60 should still be pending
-        tokensLeftToSell = hook.pendingOrders(key.toId(), 60, true);
+        tokensLeftToSell = hook.pendingOrders(key.toId(), tickHigher2, true);
         assertEq(tokensLeftToSell, amount);
     }
 
@@ -350,8 +350,8 @@ contract LimitOrderHookTest is Test, Deployers {
         // Setup two zeroForOne orders at ticks 0 and 60
         uint256 amount = 0.01 ether;
 
-        hook.placeLimitOrder(key, 0, true, amount);
-        hook.placeLimitOrder(key, 60, true, amount);
+        (, int24 tickHigher1) = hook.placeLimitOrder(key, -6930, true, amount);
+        (, int24 tickHigher2) = hook.placeLimitOrder(key, -6800, true, amount);
 
         // Do a swap to make tick increase
         IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
@@ -362,10 +362,10 @@ contract LimitOrderHookTest is Test, Deployers {
 
         swapRouter.swap(key, params, testSettings, ZERO_BYTES);
 
-        uint256 tokensLeftToSell = hook.pendingOrders(key.toId(), 0, true);
+        uint256 tokensLeftToSell = hook.pendingOrders(key.toId(), tickHigher1, true);
         assertEq(tokensLeftToSell, 0);
 
-        tokensLeftToSell = hook.pendingOrders(key.toId(), 60, true);
+        tokensLeftToSell = hook.pendingOrders(key.toId(), tickHigher2, true);
         assertEq(tokensLeftToSell, 0);
     }
 }

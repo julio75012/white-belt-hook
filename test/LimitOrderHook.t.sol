@@ -62,8 +62,8 @@ contract LimitOrderHookTest is Test, Deployers {
         modifyLiquidityRouter.modifyLiquidity(
             key,
             IPoolManager.ModifyLiquidityParams({
-                tickLower: -60,
-                tickUpper: 60,
+                tickLower: -6960,
+                tickUpper: -6900,
                 liquidityDelta: 10 ether,
                 salt: bytes32(0)
             }),
@@ -73,8 +73,8 @@ contract LimitOrderHookTest is Test, Deployers {
         modifyLiquidityRouter.modifyLiquidity(
             key,
             IPoolManager.ModifyLiquidityParams({
-                tickLower: -120,
-                tickUpper: 120,
+                tickLower: -7020,
+                tickUpper: -6780,
                 liquidityDelta: 10 ether,
                 salt: bytes32(0)
             }),
@@ -203,56 +203,75 @@ contract LimitOrderHookTest is Test, Deployers {
 
         // Check that we received our token0 tokens back, and no longer own any ERC-1155 tokens
         uint256 finalBalance = token0.balanceOfSelf();
-        assertEq(originalBalance - finalBalance, 1); // why is this equal to 1 and not 0?? TODO: investigate rounding issue
-        // assertEq(originalBalance - finalBalance, 0); // this should be true...
+
+        assertApproxEqAbs(
+            originalBalance,
+            finalBalance,
+            100 // error margin for precision loss
+        );
         tokenBalance = hook.balanceOf(address(this), positionId);
         assertEq(tokenBalance, 0);
     }
 
-    function test_orderExecute_zeroForOne() public {
-        int24 tick = 100;
-        uint256 amount = 1 ether;
-        bool zeroForOne = true;
+    struct LimitOrderParams {
+        int24 tick;
+        uint256 amount;
+        bool zeroForOne;
+    }
 
-        // Place our order at tick 100 for 10e18 token0 tokens
-        (int24 tickLower,) = hook.placeLimitOrder(key, tick, zeroForOne, amount);
+    function test_orderExecute_zeroForOne() public {
+        LimitOrderParams memory limitOrderparams = LimitOrderParams({tick: -6930, amount: 1 ether, zeroForOne: true});
+
+        // Place our order at tick -6935 for 10e18 token0 tokens
+        (, int24 tickHigher) =
+            hook.placeLimitOrder(key, limitOrderparams.tick, limitOrderparams.zeroForOne, limitOrderparams.amount);
+
+        (, int24 currentTick,,) = manager.getSlot0(key.toId());
+        //midprice is at -6932 ticks (because pool is initiated with SQRT_PRICE_1_2)
+        assertEq(currentTick, -6932);
 
         // Do a separate swap from oneForZero to make tick go up
         // Sell 1e18 token1 tokens for token0 tokens
-        IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
-            zeroForOne: !zeroForOne,
+        IPoolManager.SwapParams memory swapParams = IPoolManager.SwapParams({
+            zeroForOne: !limitOrderparams.zeroForOne,
             amountSpecified: -1 ether,
             sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
+
+        (, currentTick,,) = manager.getSlot0(key.toId());
+        assertEq(currentTick, -6932);
 
         PoolSwapTest.TestSettings memory testSettings =
             PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
 
         // Conduct the swap - `afterSwap` should also execute our placed order
-        swapRouter.swap(key, params, testSettings, ZERO_BYTES);
+        swapRouter.swap(key, swapParams, testSettings, ZERO_BYTES);
+
+        (, currentTick,,) = manager.getSlot0(key.toId());
+        assertEq(currentTick, -5755);
 
         // Check that the order has been executed
         // by ensuring no amount is left to sell in the pending orders
-        uint256 pendingTokensForPosition = hook.pendingOrders(key.toId(), tick, zeroForOne);
+        uint256 pendingTokensForPosition =
+            hook.pendingOrders(key.toId(), limitOrderparams.tick, limitOrderparams.zeroForOne);
         assertEq(pendingTokensForPosition, 0);
 
         // Check that the hook contract has the expected number of token1 tokens ready to redeem
-        uint256 positionId = hook.getPositionId(key, tickLower, zeroForOne);
+        uint256 positionId = hook.getPositionId(key, tickHigher, limitOrderparams.zeroForOne);
         uint256 claimableOutputTokens = hook.claimableOutputTokens(positionId);
         uint256 hookContractToken1Balance = token1.balanceOf(address(hook));
         assertEq(claimableOutputTokens, hookContractToken1Balance);
 
         // Ensure we can redeem the token1 tokens
         uint256 originalToken1Balance = token1.balanceOf(address(this));
-        hook.redeem(key, tick, zeroForOne, amount);
+        hook.redeem(key, limitOrderparams.tick, limitOrderparams.zeroForOne, limitOrderparams.amount);
         uint256 newToken1Balance = token1.balanceOf(address(this));
-
         assertEq(newToken1Balance - originalToken1Balance, claimableOutputTokens);
     }
 
     function test_orderExecute_oneForZero() public {
-        int24 tick = -100;
-        uint256 amount = 10 ether;
+        int24 tick = -6933;
+        uint256 amount = 1 ether;
         bool zeroForOne = false;
 
         // Place our order at tick -100 for 10e18 token1 tokens
@@ -262,7 +281,7 @@ contract LimitOrderHookTest is Test, Deployers {
         // Sell 1e18 token0 tokens for token1 tokens
         IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
             zeroForOne: true,
-            amountSpecified: -1 ether,
+            amountSpecified: -5 ether,
             sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
 
@@ -272,7 +291,7 @@ contract LimitOrderHookTest is Test, Deployers {
         swapRouter.swap(key, params, testSettings, ZERO_BYTES);
 
         // Check that the order has been executed
-        uint256 tokensLeftToSell = hook.pendingOrders(key.toId(), tick, zeroForOne);
+        uint256 tokensLeftToSell = hook.pendingOrders(key.toId(), tickLower, zeroForOne);
         assertEq(tokensLeftToSell, 0);
 
         // Check that the hook contract has the expected number of token0 tokens ready to redeem

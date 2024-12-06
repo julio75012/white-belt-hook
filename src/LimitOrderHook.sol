@@ -24,6 +24,8 @@ import {Constants} from "v4-core-test/utils/Constants.sol";
 
 import {FixedPointMathLib} from "solmate/src/utils/FixedPointMathLib.sol";
 
+import {StructuredLinkedList} from "./StructuredLinkedList.sol";
+
 import "forge-std/console.sol";
 
 contract LimitOrderHook is BaseHook, ERC1155 {
@@ -31,11 +33,18 @@ contract LimitOrderHook is BaseHook, ERC1155 {
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
     using FixedPointMathLib for uint256;
+    using StructuredLinkedList for StructuredLinkedList.List;
+
+    //Constant
+    int256 private constant TICK_OFFSET_256 = 887273;
+    int24 private constant TICK_OFFSET_24 = 887273;
 
     // Storage
     mapping(PoolId poolId => int24 lastTick) public lastTicks;
     mapping(PoolId poolId => mapping(int24 tickToSellAt => mapping(bool zeroForOne => uint256 inputAmount))) public
         pendingOrders;
+    mapping(PoolId poolId => StructuredLinkedList.List) public bids;
+    mapping(PoolId poolId => StructuredLinkedList.List) public asks;
 
     mapping(uint256 positionId => uint256 outputClaimable) public claimableOutputTokens;
     mapping(uint256 positionId => uint256 claimsSupply) public claimTokensSupply;
@@ -94,12 +103,9 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         bytes calldata
     ) external override onlyPoolManager returns (bytes4, int128) {
         // Should we try to find and execute orders? True initially
-        bool tryMore = true;
         int24 currentTick;
 
-        while (tryMore) {
-            (tryMore, currentTick) = tryCancellingLiquidity(key);
-        }
+        tryCancellingLiquidity(key);
 
         // New last known tick for this pool is the tick value
         // after our orders are executed
@@ -117,9 +123,9 @@ contract LimitOrderHook is BaseHook, ERC1155 {
 
         //checking if the currentTick matches the limitOrderTick and the intention of the user
         //zeroForOne == true -> the users intends to place a ask order (and mid < ask)
-        //zeroForOne == false -> the users intends to place an ask order (and bid < mid)
+        //zeroForOne == false -> the users intends to place an bid order (and bid < mid)
         //limitOrderTick == currentTick also, this case is invalid
-        if ((zeroForOne && limitOrderTick <= currentTick) || (!zeroForOne && currentTick <= limitOrderTick)) {
+        if ((zeroForOne && !(currentTick < limitOrderTick)) || (!zeroForOne && !(limitOrderTick < currentTick))) {
             revert InvalidOrder();
         }
 
@@ -131,16 +137,19 @@ contract LimitOrderHook is BaseHook, ERC1155 {
 
         // Create a pending order
         pendingOrders[key.toId()][tick][zeroForOne] += inputAmount;
-        //TODO: get the high or low tick back with a function (using the tickspace)
 
+        uint256 sortedTick = uint256(int256(tick) + TICK_OFFSET_256);
+        StructuredLinkedList.List storage list = zeroForOne ? asks[key.toId()] : bids[key.toId()];
+        if (!list.nodeExists(sortedTick)) {
+            uint256 tickToInsertAfter = list.getSortedSpot(sortedTick);
+            list.insertAfter(tickToInsertAfter, sortedTick);
+        }
         IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
             tickLower: lowTick,
             tickUpper: highTick,
             liquidityDelta: getLiquidity(inputAmount, lowTick, highTick, zeroForOne),
             salt: bytes32(0)
         });
-
-        console.log("msg.sender 1:", msg.sender);
 
         poolManager.unlock(abi.encode(CallbackData(key, params, msg.sender)));
 
@@ -190,7 +199,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
     {
         // Get lower actually usable tick for their order
         (int24 lowTick, int24 highTick) = getTickSpaceSegment(limitOrderTick, key.tickSpacing, zeroForOne);
-        int24 tick = zeroForOne ? lowTick : highTick;
+        int24 tick = zeroForOne ? highTick : lowTick;
         uint256 positionId = getPositionId(key, tick, zeroForOne);
 
         // If no output tokens can be claimed yet i.e. order hasn't been filled
@@ -220,33 +229,47 @@ contract LimitOrderHook is BaseHook, ERC1155 {
     }
 
     // Internal Functions
-    function tryCancellingLiquidity(PoolKey calldata key) internal returns (bool tryMore, int24 newTick) {
+    function tryCancellingLiquidity(PoolKey calldata key) internal {
+        // Get current and last tick state
         (, int24 currentTick,,) = poolManager.getSlot0(key.toId());
         int24 lastTick = lastTicks[key.toId()];
+        uint256 currentSortedTick = uint256(int256(currentTick) + TICK_OFFSET_256);
 
-        // if the price increased, we are looking to cancel the liquidity having a high tick that got crossed
-        // here zeroForOne = false, we are cancelling orders inteding to sell 1 and buy 0
-        if (currentTick > lastTick) {
-            for (int24 highTick = lastTick; highTick < currentTick; highTick += key.tickSpacing) {
-                uint256 inputAmount = pendingOrders[key.toId()][highTick][false];
-                if (inputAmount > 0) {
-                    int24 lowTick = highTick - key.tickSpacing;
-                    cancelLiquidity(key, lowTick, highTick, false, inputAmount);
-                }
-            }
-        } else {
-            // if the price decreased, we are looking to cancel the liquidity having a low tick that got crossed
-            // here zeroForOne = true, we are cancelling orders inteding to buy 1 and sell 0
-            for (int24 lowTick = lastTick; lowTick > currentTick; lowTick -= key.tickSpacing) {
-                uint256 inputAmount = pendingOrders[key.toId()][lowTick][true];
-                if (inputAmount > 0) {
-                    int24 highTick = lowTick + key.tickSpacing;
-                    cancelLiquidity(key, lowTick, highTick, true, inputAmount);
-                }
-            }
+        // Determine if price increased and select appropriate order book
+        bool isPriceIncreased = currentTick > lastTick;
+        StructuredLinkedList.List storage orderBook = isPriceIncreased ? asks[key.toId()] : bids[key.toId()];
+
+        while (true) {
+            // Get next order to process
+            (bool exists, uint256 nextOrderTick) = isPriceIncreased
+                ? orderBook.getNextNode(0) // Get lowest ask
+                : orderBook.getPreviousNode(0); // Get highest bid
+
+            // Exit if no more orders or current price hasn't crossed order price
+            if (!exists || nextOrderTick == 0) break;
+            if (isPriceIncreased && currentSortedTick < nextOrderTick) break;
+            if (!isPriceIncreased && currentSortedTick > nextOrderTick) break;
+
+            // Remove order and get stored amount
+            uint256 rawTick = isPriceIncreased
+                ? orderBook.popFront() // Pop lowest ask
+                : orderBook.popBack(); // Pop highest bid
+            int24 storedTick = int24(uint24(rawTick)) - TICK_OFFSET_24;
+            uint256 inputAmount = pendingOrders[key.toId()][storedTick][isPriceIncreased];
+
+            // Calculate tick range and cancel liquidity
+            (int24 lowTick, int24 highTick) = isPriceIncreased
+                ? (storedTick - key.tickSpacing, storedTick)
+                : (storedTick, storedTick + key.tickSpacing);
+
+            cancelLiquidity(
+                key,
+                lowTick,
+                highTick,
+                isPriceIncreased, // zeroForOne is opposite of price increase
+                inputAmount
+            );
         }
-
-        return (false, currentTick);
     }
 
     function cancelLiquidity(PoolKey calldata key, int24 lowTick, int24 highTick, bool zeroForOne, uint256 inputAmount)
@@ -264,7 +287,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         );
 
         // `inputAmount` has been deducted from this position
-        int24 tick = zeroForOne ? lowTick : highTick;
+        int24 tick = zeroForOne ? highTick : lowTick;
         pendingOrders[key.toId()][tick][zeroForOne] -= inputAmount;
         uint256 positionId = getPositionId(key, tick, zeroForOne);
         uint256 outputAmount = zeroForOne ? uint256(int256(delta.amount1())) : uint256(int256(delta.amount0()));
@@ -292,14 +315,9 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         // Conduct the swap inside the Pool Manager
         (delta, fee) = poolManager.modifyLiquidity(key, params, Constants.ZERO_BYTES);
 
-        console.log("fee.amount0(): ", fee.amount0());
-        console.log("fee.amount1(): ", fee.amount1());
-
         if (delta.amount0() < 0) {
-            console.log("delta.amount0() < 0 :", delta.amount0());
             _settle(key.currency0, uint128(-delta.amount0()), sender);
         } else if (delta.amount0() > 0) {
-            console.log("delta.amount0() > 0 :", delta.amount0());
             _take(key.currency0, uint128(delta.amount0()), sender);
         }
         if (delta.amount1() > 0) {

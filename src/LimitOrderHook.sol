@@ -40,7 +40,6 @@ contract LimitOrderHook is BaseHook, ERC1155 {
     int24 private constant TICK_OFFSET_24 = 887273;
 
     // Storage
-    mapping(PoolId poolId => int24 lastTick) public lastTicks;
     mapping(PoolId poolId => mapping(int24 tickToSellAt => mapping(bool zeroForOne => uint256 inputAmount))) public
         pendingOrders;
     mapping(PoolId poolId => StructuredLinkedList.List) public bids;
@@ -70,7 +69,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
             beforeInitialize: false,
-            afterInitialize: true,
+            afterInitialize: false,
             beforeAddLiquidity: false,
             afterAddLiquidity: false,
             beforeRemoveLiquidity: false,
@@ -86,31 +85,14 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         });
     }
 
-    function afterInitialize(address, PoolKey calldata key, uint160, int24 tick)
-        external
-        override
-        onlyPoolManager
-        returns (bytes4)
-    {
-        lastTicks[key.toId()] = tick;
-        return this.afterInitialize.selector;
-    }
-
     function afterSwap(
         address, /*sender*/ //will be useful to reimburse its gas fee...
         PoolKey calldata key,
-        IPoolManager.SwapParams calldata,
+        IPoolManager.SwapParams calldata swapParams,
         BalanceDelta,
         bytes calldata
     ) external override onlyPoolManager returns (bytes4, int128) {
-        // Should we try to find and execute orders? True initially
-        int24 currentTick;
-
-        _tryCancellingLiquidity(key);
-
-        // New last known tick for this pool is the tick value
-        // after our orders are executed
-        lastTicks[key.toId()] = currentTick;
+        _processOrdersAfterSwap(key, !swapParams.zeroForOne);
         return (this.afterSwap.selector, 0);
     }
 
@@ -258,46 +240,39 @@ contract LimitOrderHook is BaseHook, ERC1155 {
     }
 
     // Internal Functions
-    function _tryCancellingLiquidity(PoolKey calldata key) internal {
-        // Get current and last tick state
+    function _processOrdersAfterSwap(PoolKey calldata key, bool zeroForOne) internal {
         (, int24 currentTick,,) = poolManager.getSlot0(key.toId());
-        int24 lastTick = lastTicks[key.toId()];
         uint256 currentSortedTick = uint256(int256(currentTick) + TICK_OFFSET_256);
 
-        // Determine if price increased and select appropriate order book
-        bool isPriceIncreased = currentTick > lastTick;
-        StructuredLinkedList.List storage orderBook = isPriceIncreased ? asks[key.toId()] : bids[key.toId()];
+        // Select appropriate order book
+        StructuredLinkedList.List storage orderBook = zeroForOne ? asks[key.toId()] : bids[key.toId()];
+
+        console.log("zeroForOne : ", zeroForOne);
 
         while (true) {
             // Get next order to process
-            (bool exists, uint256 nextOrderTick) = isPriceIncreased
+            (bool exists, uint256 nextOrderTick) = zeroForOne
                 ? orderBook.getNextNode(0) // Get lowest ask
                 : orderBook.getPreviousNode(0); // Get highest bid
 
             // Exit if no more orders or current price hasn't crossed order price
             if (!exists || nextOrderTick == 0) break;
-            if (isPriceIncreased && currentSortedTick < nextOrderTick) break;
-            if (!isPriceIncreased && currentSortedTick > nextOrderTick) break;
+            if (zeroForOne && currentSortedTick < nextOrderTick) break;
+            if (!zeroForOne && currentSortedTick > nextOrderTick) break;
 
             // Remove order and get stored amount
-            uint256 rawTick = isPriceIncreased
+            uint256 rawTick = zeroForOne
                 ? orderBook.popFront() // Pop lowest ask
                 : orderBook.popBack(); // Pop highest bid
             int24 storedTick = int24(uint24(rawTick)) - TICK_OFFSET_24;
-            uint256 inputAmount = pendingOrders[key.toId()][storedTick][isPriceIncreased];
+            console.log("storedTick : ", storedTick);
+            uint256 inputAmount = pendingOrders[key.toId()][storedTick][zeroForOne];
 
             // Calculate tick range and cancel liquidity
-            (int24 lowTick, int24 highTick) = isPriceIncreased
-                ? (storedTick - key.tickSpacing, storedTick)
-                : (storedTick, storedTick + key.tickSpacing);
+            (int24 lowTick, int24 highTick) =
+                zeroForOne ? (storedTick - key.tickSpacing, storedTick) : (storedTick, storedTick + key.tickSpacing);
 
-            _cancelLiquidity(
-                key,
-                lowTick,
-                highTick,
-                isPriceIncreased, // NOTE: zeroForOne is opposite of price increase
-                inputAmount
-            );
+            _cancelLiquidity(key, lowTick, highTick, zeroForOne, inputAmount);
         }
     }
 

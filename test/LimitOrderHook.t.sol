@@ -44,7 +44,7 @@ contract LimitOrderHookTest is Test, Deployers {
         (token0, token1) = deployMintAndApprove2Currencies();
 
         // Deploy our hook
-        uint160 flags = uint160(Hooks.AFTER_INITIALIZE_FLAG | Hooks.AFTER_SWAP_FLAG);
+        uint160 flags = uint160(Hooks.AFTER_SWAP_FLAG);
         address hookAddress = address(flags);
         deployCodeTo("LimitOrderHook.sol", abi.encode(manager, ""), hookAddress);
         hook = LimitOrderHook(hookAddress);

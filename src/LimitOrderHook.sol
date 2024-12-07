@@ -40,7 +40,6 @@ contract LimitOrderHook is BaseHook, ERC1155 {
     int24 private constant TICK_OFFSET_24 = 887273;
 
     // Storage
-    mapping(PoolId poolId => int24 lastTick) public lastTicks;
     mapping(PoolId poolId => mapping(int24 tickToSellAt => mapping(bool zeroForOne => uint256 inputAmount))) public
         pendingOrders;
     mapping(PoolId poolId => StructuredLinkedList.List) public bids;
@@ -48,6 +47,13 @@ contract LimitOrderHook is BaseHook, ERC1155 {
 
     mapping(uint256 positionId => uint256 outputClaimable) public claimableOutputTokens;
     mapping(uint256 positionId => uint256 claimsSupply) public claimTokensSupply;
+
+    //Struct
+    struct CallbackData {
+        PoolKey key;
+        IPoolManager.ModifyLiquidityParams params;
+        address sender;
+    }
 
     // Errors
     error InvalidOrder();
@@ -63,7 +69,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
             beforeInitialize: false,
-            afterInitialize: true,
+            afterInitialize: false,
             beforeAddLiquidity: false,
             afterAddLiquidity: false,
             beforeRemoveLiquidity: false,
@@ -79,41 +85,27 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         });
     }
 
-    struct CallbackData {
-        PoolKey key;
-        IPoolManager.ModifyLiquidityParams params;
-        address sender;
-    }
-
-    function afterInitialize(address, PoolKey calldata key, uint160, int24 tick)
-        external
-        override
-        onlyPoolManager
-        returns (bytes4)
-    {
-        lastTicks[key.toId()] = tick;
-        return this.afterInitialize.selector;
-    }
-
     function afterSwap(
         address, /*sender*/ //will be useful to reimburse its gas fee...
         PoolKey calldata key,
-        IPoolManager.SwapParams calldata,
+        IPoolManager.SwapParams calldata swapParams,
         BalanceDelta,
         bytes calldata
     ) external override onlyPoolManager returns (bytes4, int128) {
-        // Should we try to find and execute orders? True initially
-        int24 currentTick;
-
-        tryCancellingLiquidity(key);
-
-        // New last known tick for this pool is the tick value
-        // after our orders are executed
-        lastTicks[key.toId()] = currentTick;
+        _processOrdersAfterSwap(key, !swapParams.zeroForOne);
         return (this.afterSwap.selector, 0);
     }
 
     // Core Hook External Functions
+    /**
+     * @dev Place a limit order.
+     * @param key pool key.
+     * @param limitOrderTick the tick price at which the user wants to buy or sell.
+     * @param zeroForOne direction of the desired trade
+     * @param inputAmount the desired amount to trade that will be added as liquidity first
+     * @return lowTick bottom of the range where the liquidity is added (reference price for sorting bids)
+     * @return highTick top of the range where the liquidity is added (reference price for sorting asks)
+     */
     function placeLimitOrder(PoolKey calldata key, int24 limitOrderTick, bool zeroForOne, uint256 inputAmount)
         external
         returns (int24 lowTick, int24 highTick)
@@ -130,28 +122,31 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         }
 
         // Get the smallest tick range on which we will add liquidity
-        (lowTick, highTick) = getTickSpaceSegment(limitOrderTick, key.tickSpacing, zeroForOne);
+        (lowTick, highTick) = _getMinimalTickRange(limitOrderTick, key.tickSpacing, zeroForOne);
 
         //we store here the tick price that a swap needs to fully cross in order to cancel the liquidity
         int24 tick = zeroForOne ? highTick : lowTick;
 
+        //here we add the liquidity accordingly on the market
+        IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
+            tickLower: lowTick,
+            tickUpper: highTick,
+            liquidityDelta: _getLiquidity(inputAmount, lowTick, highTick, zeroForOne),
+            salt: bytes32(0)
+        });
+
+        poolManager.unlock(abi.encode(CallbackData(key, params, msg.sender)));
+
         // Create a pending order
         pendingOrders[key.toId()][tick][zeroForOne] += inputAmount;
 
+        //here we save the order in the right sorted list (bids and asks)
         uint256 sortedTick = uint256(int256(tick) + TICK_OFFSET_256);
         StructuredLinkedList.List storage list = zeroForOne ? asks[key.toId()] : bids[key.toId()];
         if (!list.nodeExists(sortedTick)) {
             uint256 tickToInsertAfter = list.getSortedSpot(sortedTick);
             list.insertAfter(tickToInsertAfter, sortedTick);
         }
-        IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
-            tickLower: lowTick,
-            tickUpper: highTick,
-            liquidityDelta: getLiquidity(inputAmount, lowTick, highTick, zeroForOne),
-            salt: bytes32(0)
-        });
-
-        poolManager.unlock(abi.encode(CallbackData(key, params, msg.sender)));
 
         // Mint claim tokens to user equal to their `inputAmount`
         uint256 positionId = getPositionId(key, tick, zeroForOne);
@@ -162,11 +157,19 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         return (lowTick, highTick);
     }
 
-    function cancelOrder(PoolKey calldata key, int24 limitOrderTick, bool zeroForOne, uint256 amountToCancel)
+    // Core Hook External Functions
+    /**
+     * @dev Delete a limit order.
+     * @param key pool key.
+     * @param limitOrderTick the tick price at which the user previously places its order.
+     * @param zeroForOne direction of the initially desired trade
+     * @param amountToCancel the desired amount of quantity to be cancelled
+     */
+    function cancelLimitOrder(PoolKey calldata key, int24 limitOrderTick, bool zeroForOne, uint256 amountToCancel)
         external
     {
         // Get the smallest tick range on which we will add liquidity
-        (int24 lowTick, int24 highTick) = getTickSpaceSegment(limitOrderTick, key.tickSpacing, zeroForOne);
+        (int24 lowTick, int24 highTick) = _getMinimalTickRange(limitOrderTick, key.tickSpacing, zeroForOne);
 
         //we store here the tick price that a swap needs to fully cross in order to cancel the liquidity
         int24 tick = zeroForOne ? highTick : lowTick;
@@ -179,7 +182,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
             tickLower: lowTick,
             tickUpper: highTick,
-            liquidityDelta: -getLiquidity(amountToCancel, lowTick, highTick, zeroForOne),
+            liquidityDelta: -_getLiquidity(amountToCancel, lowTick, highTick, zeroForOne),
             salt: bytes32(0)
         });
 
@@ -189,16 +192,31 @@ contract LimitOrderHook is BaseHook, ERC1155 {
 
         // Remove their `amountToCancel` worth of position from pending orders
         pendingOrders[key.toId()][tick][zeroForOne] -= amountToCancel;
+
+        //here we save the order in the right sorted list (bids and asks)
+        uint256 sortedTick = uint256(int256(tick) + TICK_OFFSET_256);
+        StructuredLinkedList.List storage list = zeroForOne ? asks[key.toId()] : bids[key.toId()];
+        if (list.nodeExists(sortedTick) && pendingOrders[key.toId()][tick][zeroForOne] == 0) {
+            list.remove(sortedTick);
+        }
+
         // Reduce claim token total supply and burn their share
         claimTokensSupply[positionId] -= amountToCancel;
         _burn(msg.sender, positionId, amountToCancel);
     }
 
+    /**
+     * @dev Delete a limit order.
+     * @param key pool key.
+     * @param limitOrderTick the tick price at which the user previously places its order.
+     * @param zeroForOne direction of the initially desired trade
+     * @param inputAmountToClaimFor the desired amount of quantity to be redeemed
+     */
     function redeem(PoolKey calldata key, int24 limitOrderTick, bool zeroForOne, uint256 inputAmountToClaimFor)
         external
     {
         // Get lower actually usable tick for their order
-        (int24 lowTick, int24 highTick) = getTickSpaceSegment(limitOrderTick, key.tickSpacing, zeroForOne);
+        (int24 lowTick, int24 highTick) = _getMinimalTickRange(limitOrderTick, key.tickSpacing, zeroForOne);
         int24 tick = zeroForOne ? highTick : lowTick;
         uint256 positionId = getPositionId(key, tick, zeroForOne);
 
@@ -229,59 +247,52 @@ contract LimitOrderHook is BaseHook, ERC1155 {
     }
 
     // Internal Functions
-    function tryCancellingLiquidity(PoolKey calldata key) internal {
-        // Get current and last tick state
+    function _processOrdersAfterSwap(PoolKey calldata key, bool zeroForOne) internal {
         (, int24 currentTick,,) = poolManager.getSlot0(key.toId());
-        int24 lastTick = lastTicks[key.toId()];
         uint256 currentSortedTick = uint256(int256(currentTick) + TICK_OFFSET_256);
 
-        // Determine if price increased and select appropriate order book
-        bool isPriceIncreased = currentTick > lastTick;
-        StructuredLinkedList.List storage orderBook = isPriceIncreased ? asks[key.toId()] : bids[key.toId()];
+        // Select appropriate order book
+        StructuredLinkedList.List storage orderBook = zeroForOne ? asks[key.toId()] : bids[key.toId()];
+
+        console.log("zeroForOne : ", zeroForOne);
 
         while (true) {
             // Get next order to process
-            (bool exists, uint256 nextOrderTick) = isPriceIncreased
+            (bool exists, uint256 nextOrderTick) = zeroForOne
                 ? orderBook.getNextNode(0) // Get lowest ask
                 : orderBook.getPreviousNode(0); // Get highest bid
 
             // Exit if no more orders or current price hasn't crossed order price
             if (!exists || nextOrderTick == 0) break;
-            if (isPriceIncreased && currentSortedTick < nextOrderTick) break;
-            if (!isPriceIncreased && currentSortedTick > nextOrderTick) break;
+            if (zeroForOne && currentSortedTick < nextOrderTick) break;
+            if (!zeroForOne && currentSortedTick > nextOrderTick) break;
 
             // Remove order and get stored amount
-            uint256 rawTick = isPriceIncreased
+            uint256 rawTick = zeroForOne
                 ? orderBook.popFront() // Pop lowest ask
                 : orderBook.popBack(); // Pop highest bid
             int24 storedTick = int24(uint24(rawTick)) - TICK_OFFSET_24;
-            uint256 inputAmount = pendingOrders[key.toId()][storedTick][isPriceIncreased];
+            console.log("storedTick : ", storedTick);
+            uint256 inputAmount = pendingOrders[key.toId()][storedTick][zeroForOne];
 
             // Calculate tick range and cancel liquidity
-            (int24 lowTick, int24 highTick) = isPriceIncreased
-                ? (storedTick - key.tickSpacing, storedTick)
-                : (storedTick, storedTick + key.tickSpacing);
+            (int24 lowTick, int24 highTick) =
+                zeroForOne ? (storedTick - key.tickSpacing, storedTick) : (storedTick, storedTick + key.tickSpacing);
 
-            cancelLiquidity(
-                key,
-                lowTick,
-                highTick,
-                isPriceIncreased, // zeroForOne is opposite of price increase
-                inputAmount
-            );
+            _cancelLiquidity(key, lowTick, highTick, zeroForOne, inputAmount);
         }
     }
 
-    function cancelLiquidity(PoolKey calldata key, int24 lowTick, int24 highTick, bool zeroForOne, uint256 inputAmount)
+    function _cancelLiquidity(PoolKey calldata key, int24 lowTick, int24 highTick, bool zeroForOne, uint256 inputAmount)
         internal
     {
         // Do the actual swap and settle all balances
-        BalanceDelta delta = modifyLiquidityAndSettleBalances(
+        BalanceDelta delta = _modifyLiquidityAndSettleBalances(
             key,
             IPoolManager.ModifyLiquidityParams({
                 tickLower: lowTick,
                 tickUpper: highTick,
-                liquidityDelta: -getLiquidity(inputAmount, lowTick, highTick, zeroForOne),
+                liquidityDelta: -_getLiquidity(inputAmount, lowTick, highTick, zeroForOne),
                 salt: bytes32(0)
             })
         );
@@ -301,12 +312,12 @@ contract LimitOrderHook is BaseHook, ERC1155 {
 
         CallbackData memory data = abi.decode(rawData, (CallbackData));
 
-        BalanceDelta delta = modifyLiquidityAndSettleBalances(data.key, data.params, data.sender);
+        BalanceDelta delta = _modifyLiquidityAndSettleBalances(data.key, data.params, data.sender);
 
         return abi.encode(delta);
     }
 
-    function modifyLiquidityAndSettleBalances(
+    function _modifyLiquidityAndSettleBalances(
         PoolKey memory key,
         IPoolManager.ModifyLiquidityParams memory params,
         address sender
@@ -327,11 +338,11 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         }
     }
 
-    function modifyLiquidityAndSettleBalances(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params)
+    function _modifyLiquidityAndSettleBalances(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params)
         internal
         returns (BalanceDelta)
     {
-        return modifyLiquidityAndSettleBalances(key, params, address(this));
+        return _modifyLiquidityAndSettleBalances(key, params, address(this));
     }
 
     // Update _settle function to handle both cases
@@ -355,7 +366,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         return uint256(keccak256(abi.encode(key.toId(), tick, zeroForOne)));
     }
 
-    function getLiquidity(uint256 inputAmount, int24 lowTick, int24 highTick, bool zeroForOne)
+    function _getLiquidity(uint256 inputAmount, int24 lowTick, int24 highTick, bool zeroForOne)
         private
         pure
         returns (int256 liquidity)
@@ -370,7 +381,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         return int256(FullMath.mulDiv(inputAmount, FixedPoint96.Q96, sqrtPriceBX96 - sqrtPriceAX96));
     }
 
-    function getTickSpaceSegment(int24 tick, int24 tickSpacing, bool zeroForOne)
+    function _getMinimalTickRange(int24 tick, int24 tickSpacing, bool zeroForOne)
         private
         pure
         returns (int24 low, int24 high)

@@ -44,7 +44,7 @@ contract LimitOrderHookTest is Test, Deployers {
         (token0, token1) = deployMintAndApprove2Currencies();
 
         // Deploy our hook
-        uint160 flags = uint160(Hooks.AFTER_INITIALIZE_FLAG | Hooks.AFTER_SWAP_FLAG);
+        uint160 flags = uint160(Hooks.AFTER_SWAP_FLAG);
         address hookAddress = address(flags);
         deployCodeTo("LimitOrderHook.sol", abi.encode(manager, ""), hookAddress);
         hook = LimitOrderHook(hookAddress);
@@ -179,7 +179,7 @@ contract LimitOrderHookTest is Test, Deployers {
         assertEq(tokenBalance, amount);
     }
 
-    function test_cancelOrder() public {
+    function test_cancelLimitOrder() public {
         // Place an order as earlier
         int24 tick = 100;
         uint256 amount = 10e19;
@@ -199,7 +199,7 @@ contract LimitOrderHookTest is Test, Deployers {
         assertEq(tokenBalance, amount);
 
         // Cancel the order
-        hook.cancelOrder(key, tick, zeroForOne, amount);
+        hook.cancelLimitOrder(key, tick, zeroForOne, amount);
 
         // Check that we received our token0 tokens back, and no longer own any ERC-1155 tokens
         uint256 finalBalance = token0.balanceOfSelf();

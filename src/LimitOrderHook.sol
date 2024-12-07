@@ -122,7 +122,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         }
 
         // Get the smallest tick range on which we will add liquidity
-        (lowTick, highTick) = getMinimalTickRange(limitOrderTick, key.tickSpacing, zeroForOne);
+        (lowTick, highTick) = _getMinimalTickRange(limitOrderTick, key.tickSpacing, zeroForOne);
 
         //we store here the tick price that a swap needs to fully cross in order to cancel the liquidity
         int24 tick = zeroForOne ? highTick : lowTick;
@@ -131,7 +131,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
             tickLower: lowTick,
             tickUpper: highTick,
-            liquidityDelta: getLiquidity(inputAmount, lowTick, highTick, zeroForOne),
+            liquidityDelta: _getLiquidity(inputAmount, lowTick, highTick, zeroForOne),
             salt: bytes32(0)
         });
 
@@ -169,7 +169,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         external
     {
         // Get the smallest tick range on which we will add liquidity
-        (int24 lowTick, int24 highTick) = getMinimalTickRange(limitOrderTick, key.tickSpacing, zeroForOne);
+        (int24 lowTick, int24 highTick) = _getMinimalTickRange(limitOrderTick, key.tickSpacing, zeroForOne);
 
         //we store here the tick price that a swap needs to fully cross in order to cancel the liquidity
         int24 tick = zeroForOne ? highTick : lowTick;
@@ -182,7 +182,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
             tickLower: lowTick,
             tickUpper: highTick,
-            liquidityDelta: -getLiquidity(amountToCancel, lowTick, highTick, zeroForOne),
+            liquidityDelta: -_getLiquidity(amountToCancel, lowTick, highTick, zeroForOne),
             salt: bytes32(0)
         });
 
@@ -205,11 +205,18 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         _burn(msg.sender, positionId, amountToCancel);
     }
 
+    /**
+     * @dev Delete a limit order.
+     * @param key pool key.
+     * @param limitOrderTick the tick price at which the user previously places its order.
+     * @param zeroForOne direction of the initially desired trade
+     * @param inputAmountToClaimFor the desired amount of quantity to be redeemed
+     */
     function redeem(PoolKey calldata key, int24 limitOrderTick, bool zeroForOne, uint256 inputAmountToClaimFor)
         external
     {
         // Get lower actually usable tick for their order
-        (int24 lowTick, int24 highTick) = getMinimalTickRange(limitOrderTick, key.tickSpacing, zeroForOne);
+        (int24 lowTick, int24 highTick) = _getMinimalTickRange(limitOrderTick, key.tickSpacing, zeroForOne);
         int24 tick = zeroForOne ? highTick : lowTick;
         uint256 positionId = getPositionId(key, tick, zeroForOne);
 
@@ -285,7 +292,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
             IPoolManager.ModifyLiquidityParams({
                 tickLower: lowTick,
                 tickUpper: highTick,
-                liquidityDelta: -getLiquidity(inputAmount, lowTick, highTick, zeroForOne),
+                liquidityDelta: -_getLiquidity(inputAmount, lowTick, highTick, zeroForOne),
                 salt: bytes32(0)
             })
         );
@@ -359,7 +366,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         return uint256(keccak256(abi.encode(key.toId(), tick, zeroForOne)));
     }
 
-    function getLiquidity(uint256 inputAmount, int24 lowTick, int24 highTick, bool zeroForOne)
+    function _getLiquidity(uint256 inputAmount, int24 lowTick, int24 highTick, bool zeroForOne)
         private
         pure
         returns (int256 liquidity)
@@ -374,7 +381,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         return int256(FullMath.mulDiv(inputAmount, FixedPoint96.Q96, sqrtPriceBX96 - sqrtPriceAX96));
     }
 
-    function getMinimalTickRange(int24 tick, int24 tickSpacing, bool zeroForOne)
+    function _getMinimalTickRange(int24 tick, int24 tickSpacing, bool zeroForOne)
         private
         pure
         returns (int24 low, int24 high)

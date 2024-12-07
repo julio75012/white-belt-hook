@@ -49,6 +49,13 @@ contract LimitOrderHook is BaseHook, ERC1155 {
     mapping(uint256 positionId => uint256 outputClaimable) public claimableOutputTokens;
     mapping(uint256 positionId => uint256 claimsSupply) public claimTokensSupply;
 
+    //Struct
+    struct CallbackData {
+        PoolKey key;
+        IPoolManager.ModifyLiquidityParams params;
+        address sender;
+    }
+
     // Errors
     error InvalidOrder();
     error NothingToClaim();
@@ -79,12 +86,6 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         });
     }
 
-    struct CallbackData {
-        PoolKey key;
-        IPoolManager.ModifyLiquidityParams params;
-        address sender;
-    }
-
     function afterInitialize(address, PoolKey calldata key, uint160, int24 tick)
         external
         override
@@ -105,7 +106,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         // Should we try to find and execute orders? True initially
         int24 currentTick;
 
-        tryCancellingLiquidity(key);
+        _tryCancellingLiquidity(key);
 
         // New last known tick for this pool is the tick value
         // after our orders are executed
@@ -114,6 +115,15 @@ contract LimitOrderHook is BaseHook, ERC1155 {
     }
 
     // Core Hook External Functions
+    /**
+     * @dev Place a limit order.
+     * @param key pool key.
+     * @param limitOrderTick the tick price at which the user wants to buy or sell.
+     * @param zeroForOne direction of the desired trade
+     * @param inputAmount the desired amount to trade that will be added as liquidity first
+     * @return lowTick bottom of the range where the liquidity is added (reference price for sorting bids)
+     * @return highTick top of the range where the liquidity is added (reference price for sorting asks)
+     */
     function placeLimitOrder(PoolKey calldata key, int24 limitOrderTick, bool zeroForOne, uint256 inputAmount)
         external
         returns (int24 lowTick, int24 highTick)
@@ -130,20 +140,12 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         }
 
         // Get the smallest tick range on which we will add liquidity
-        (lowTick, highTick) = getTickSpaceSegment(limitOrderTick, key.tickSpacing, zeroForOne);
+        (lowTick, highTick) = getMinimalTickRange(limitOrderTick, key.tickSpacing, zeroForOne);
 
         //we store here the tick price that a swap needs to fully cross in order to cancel the liquidity
         int24 tick = zeroForOne ? highTick : lowTick;
 
-        // Create a pending order
-        pendingOrders[key.toId()][tick][zeroForOne] += inputAmount;
-
-        uint256 sortedTick = uint256(int256(tick) + TICK_OFFSET_256);
-        StructuredLinkedList.List storage list = zeroForOne ? asks[key.toId()] : bids[key.toId()];
-        if (!list.nodeExists(sortedTick)) {
-            uint256 tickToInsertAfter = list.getSortedSpot(sortedTick);
-            list.insertAfter(tickToInsertAfter, sortedTick);
-        }
+        //here we add the liquidity accordingly on the market
         IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
             tickLower: lowTick,
             tickUpper: highTick,
@@ -152,6 +154,17 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         });
 
         poolManager.unlock(abi.encode(CallbackData(key, params, msg.sender)));
+
+        // Create a pending order
+        pendingOrders[key.toId()][tick][zeroForOne] += inputAmount;
+
+        //here we save the order in the right sorted list (bids and asks)
+        uint256 sortedTick = uint256(int256(tick) + TICK_OFFSET_256);
+        StructuredLinkedList.List storage list = zeroForOne ? asks[key.toId()] : bids[key.toId()];
+        if (!list.nodeExists(sortedTick)) {
+            uint256 tickToInsertAfter = list.getSortedSpot(sortedTick);
+            list.insertAfter(tickToInsertAfter, sortedTick);
+        }
 
         // Mint claim tokens to user equal to their `inputAmount`
         uint256 positionId = getPositionId(key, tick, zeroForOne);
@@ -162,11 +175,19 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         return (lowTick, highTick);
     }
 
-    function cancelOrder(PoolKey calldata key, int24 limitOrderTick, bool zeroForOne, uint256 amountToCancel)
+    // Core Hook External Functions
+    /**
+     * @dev Delete a limit order.
+     * @param key pool key.
+     * @param limitOrderTick the tick price at which the user previously places its order.
+     * @param zeroForOne direction of the initially desired trade
+     * @param amountToCancel the desired amount of quantity to be cancelled
+     */
+    function cancelLimitOrder(PoolKey calldata key, int24 limitOrderTick, bool zeroForOne, uint256 amountToCancel)
         external
     {
         // Get the smallest tick range on which we will add liquidity
-        (int24 lowTick, int24 highTick) = getTickSpaceSegment(limitOrderTick, key.tickSpacing, zeroForOne);
+        (int24 lowTick, int24 highTick) = getMinimalTickRange(limitOrderTick, key.tickSpacing, zeroForOne);
 
         //we store here the tick price that a swap needs to fully cross in order to cancel the liquidity
         int24 tick = zeroForOne ? highTick : lowTick;
@@ -189,6 +210,14 @@ contract LimitOrderHook is BaseHook, ERC1155 {
 
         // Remove their `amountToCancel` worth of position from pending orders
         pendingOrders[key.toId()][tick][zeroForOne] -= amountToCancel;
+
+        //here we save the order in the right sorted list (bids and asks)
+        uint256 sortedTick = uint256(int256(tick) + TICK_OFFSET_256);
+        StructuredLinkedList.List storage list = zeroForOne ? asks[key.toId()] : bids[key.toId()];
+        if (list.nodeExists(sortedTick) && pendingOrders[key.toId()][tick][zeroForOne] == 0) {
+            list.remove(sortedTick);
+        }
+
         // Reduce claim token total supply and burn their share
         claimTokensSupply[positionId] -= amountToCancel;
         _burn(msg.sender, positionId, amountToCancel);
@@ -198,7 +227,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         external
     {
         // Get lower actually usable tick for their order
-        (int24 lowTick, int24 highTick) = getTickSpaceSegment(limitOrderTick, key.tickSpacing, zeroForOne);
+        (int24 lowTick, int24 highTick) = getMinimalTickRange(limitOrderTick, key.tickSpacing, zeroForOne);
         int24 tick = zeroForOne ? highTick : lowTick;
         uint256 positionId = getPositionId(key, tick, zeroForOne);
 
@@ -229,7 +258,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
     }
 
     // Internal Functions
-    function tryCancellingLiquidity(PoolKey calldata key) internal {
+    function _tryCancellingLiquidity(PoolKey calldata key) internal {
         // Get current and last tick state
         (, int24 currentTick,,) = poolManager.getSlot0(key.toId());
         int24 lastTick = lastTicks[key.toId()];
@@ -262,21 +291,21 @@ contract LimitOrderHook is BaseHook, ERC1155 {
                 ? (storedTick - key.tickSpacing, storedTick)
                 : (storedTick, storedTick + key.tickSpacing);
 
-            cancelLiquidity(
+            _cancelLiquidity(
                 key,
                 lowTick,
                 highTick,
-                isPriceIncreased, // zeroForOne is opposite of price increase
+                isPriceIncreased, // NOTE: zeroForOne is opposite of price increase
                 inputAmount
             );
         }
     }
 
-    function cancelLiquidity(PoolKey calldata key, int24 lowTick, int24 highTick, bool zeroForOne, uint256 inputAmount)
+    function _cancelLiquidity(PoolKey calldata key, int24 lowTick, int24 highTick, bool zeroForOne, uint256 inputAmount)
         internal
     {
         // Do the actual swap and settle all balances
-        BalanceDelta delta = modifyLiquidityAndSettleBalances(
+        BalanceDelta delta = _modifyLiquidityAndSettleBalances(
             key,
             IPoolManager.ModifyLiquidityParams({
                 tickLower: lowTick,
@@ -301,12 +330,12 @@ contract LimitOrderHook is BaseHook, ERC1155 {
 
         CallbackData memory data = abi.decode(rawData, (CallbackData));
 
-        BalanceDelta delta = modifyLiquidityAndSettleBalances(data.key, data.params, data.sender);
+        BalanceDelta delta = _modifyLiquidityAndSettleBalances(data.key, data.params, data.sender);
 
         return abi.encode(delta);
     }
 
-    function modifyLiquidityAndSettleBalances(
+    function _modifyLiquidityAndSettleBalances(
         PoolKey memory key,
         IPoolManager.ModifyLiquidityParams memory params,
         address sender
@@ -327,11 +356,11 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         }
     }
 
-    function modifyLiquidityAndSettleBalances(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params)
+    function _modifyLiquidityAndSettleBalances(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params)
         internal
         returns (BalanceDelta)
     {
-        return modifyLiquidityAndSettleBalances(key, params, address(this));
+        return _modifyLiquidityAndSettleBalances(key, params, address(this));
     }
 
     // Update _settle function to handle both cases
@@ -370,7 +399,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         return int256(FullMath.mulDiv(inputAmount, FixedPoint96.Q96, sqrtPriceBX96 - sqrtPriceAX96));
     }
 
-    function getTickSpaceSegment(int24 tick, int24 tickSpacing, bool zeroForOne)
+    function getMinimalTickRange(int24 tick, int24 tickSpacing, bool zeroForOne)
         private
         pure
         returns (int24 low, int24 high)

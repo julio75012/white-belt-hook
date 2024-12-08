@@ -124,9 +124,6 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         // Get the smallest tick range on which we will add liquidity
         (lowTick, highTick) = _getMinimalTickRange(limitOrderTick, key.tickSpacing, zeroForOne);
 
-        //we store here the tick price that a swap needs to fully cross in order to cancel the liquidity
-        int24 tick = zeroForOne ? highTick : lowTick;
-
         //here we add the liquidity accordingly on the market
         IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
             tickLower: lowTick,
@@ -136,6 +133,9 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         });
 
         poolManager.unlock(abi.encode(CallbackData(key, params, msg.sender)));
+
+        //we store here the tick price that a swap needs to fully cross in order to cancel the liquidity
+        int24 tick = zeroForOne ? highTick : lowTick;
 
         // Create a pending order
         pendingOrders[key.toId()][tick][zeroForOne] += inputAmount;
@@ -188,7 +188,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
 
         poolManager.unlock(abi.encode(CallbackData(key, params, msg.sender)));
 
-        //NOTE: I put the liquidity removal before the 'token exchange', making sure it works first.
+        //NOTE: I put the liquidity removal before the 'internal accounting', making sure it works first.
 
         // Remove their `amountToCancel` worth of position from pending orders
         pendingOrders[key.toId()][tick][zeroForOne] -= amountToCancel;
@@ -254,8 +254,6 @@ contract LimitOrderHook is BaseHook, ERC1155 {
         // Select appropriate order book
         StructuredLinkedList.List storage orderBook = zeroForOne ? asks[key.toId()] : bids[key.toId()];
 
-        console.log("zeroForOne : ", zeroForOne);
-
         while (true) {
             // Get next order to process
             (bool exists, uint256 nextOrderTick) = zeroForOne
@@ -272,7 +270,6 @@ contract LimitOrderHook is BaseHook, ERC1155 {
                 ? orderBook.popFront() // Pop lowest ask
                 : orderBook.popBack(); // Pop highest bid
             int24 storedTick = int24(uint24(rawTick)) - TICK_OFFSET_24;
-            console.log("storedTick : ", storedTick);
             uint256 inputAmount = pendingOrders[key.toId()][storedTick][zeroForOne];
 
             // Calculate tick range and cancel liquidity

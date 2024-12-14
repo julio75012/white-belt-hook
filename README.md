@@ -17,7 +17,7 @@ This hook enables limit order functionality in Uniswap v4 pools by leveraging th
 
 ## YouTube Demo & Explanation
 
-[YouTube Uniswap v4 Limit Order Hook Explanation](https://www.youtube.com/embed/VMt0i9OPEzY?si=G0DQKEvzFpNM6TZH)
+[YouTube Uniswap v4 Limit Order Hook Explanation](https://www.youtube.com/watch?v=VMt0i9OPEzY)
 
 Click the link above to watch the explanation video on YouTube.
 

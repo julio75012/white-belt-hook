@@ -38,33 +38,33 @@ Click the link above to watch the explanation video on YouTube.
 
 ```solidity
 function placeLimitOrder(
-PoolKey calldata key,
-int24 limitOrderTick,
-bool zeroForOne,
-uint256 inputAmount
-) external returns (int24 lowTick, int24 highTick)
+      PoolKey calldata key,
+      int24 limitOrderTick,
+      bool zeroForOne,
+      uint256 inputAmount
+      ) external returns (int24 lowTick, int24 highTick)
 ```
 
 Places a new limit order at the specified tick price.
 
 ```solidity
 function cancelLimitOrder(
-PoolKey calldata key,
-int24 limitOrderTick,
-bool zeroForOne,
-uint256 amountToCancel
-) external
+      PoolKey calldata key,
+      int24 limitOrderTick,
+      bool zeroForOne,
+      uint256 amountToCancel
+      ) external
 ```
 
 Cancels an existing limit order and returns the original tokens.
 
 ```solidity
 function redeem(
-PoolKey calldata key,
-int24 limitOrderTick,
-bool zeroForOne,
-uint256 inputAmountToClaimFor
-) external
+      PoolKey calldata key,
+      int24 limitOrderTick,
+      bool zeroForOne,
+      uint256 inputAmountToClaimFor
+      ) external
 ```
 
 Claims tokens after a successful order execution.

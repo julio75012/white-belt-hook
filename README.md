@@ -13,7 +13,7 @@ This hook enables limit order functionality in Uniswap v4 pools by leveraging th
 - **Automatic Execution**: Orders are automatically executed when price conditions are met
 - **ERC-1155 Tokenized Positions**: Order positions are represented as ERC-1155 tokens
 - **Sorted Order Books**: Maintains separate sorted lists for bids and asks
-- **Partial Fill Support**: Orders can be partially filled and claimed
+- **Partial Fill Support**: Not yet supported
 
 ## YouTube Demo & Explanation
 

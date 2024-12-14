@@ -1,66 +1,144 @@
-## Foundry
+# Uniswap v4 Limit Order Hook
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+A custom Uniswap v4 Hook that implements limit order functionality, allowing users to place, cancel, and execute limit orders directly on-chain.
 
-Foundry consists of:
+## Overview
 
--   **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
--   **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
--   **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
--   **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+This hook enables limit order functionality in Uniswap v4 pools by leveraging the hook system. Users can place both buy and sell limit orders at specific price points (ticks), and these orders are automatically executed when the market price crosses their specified price level.
 
-## Documentation
+## Features
 
-https://book.getfoundry.sh/
+- **Limit Order Placement**: Place buy or sell orders at specific price points
+- **Order Cancellation**: Cancel existing orders and retrieve original tokens
+- **Automatic Execution**: Orders are automatically executed when price conditions are met
+- **ERC-1155 Tokenized Positions**: Order positions are represented as ERC-1155 tokens
+- **Sorted Order Books**: Maintains separate sorted lists for bids and asks
+- **Partial Fill Support**: Orders can be partially filled and claimed
 
-## Usage
+## Demo & Explanation
 
-### Build
+[![Uniswap v4 Limit Order Hook Explanation](https://www.youtube.com/embed/VMt0i9OPEzY?si=G0DQKEvzFpNM6TZH)
 
-```shell
-$ forge build
+Click the link above to watch the explanation video on YouTube.
+
+## Technical Details
+
+### Core Components
+
+1. **LimitOrderHook.sol**: Main contract implementing the limit order functionality
+   - Inherits from `BaseHook` and `ERC1155`
+   - Implements Uniswap v4's hook interface
+   - Manages order books and execution logic
+
+2. **StructuredLinkedList.sol**: Helper contract for maintaining sorted order books
+   - Implements a doubly-linked list with sorting capabilities
+   - Used to track and process orders efficiently
+
+### Key Functions
+
+```solidity
+function placeLimitOrder(
+PoolKey calldata key,
+int24 limitOrderTick,
+bool zeroForOne,
+uint256 inputAmount
+) external returns (int24 lowTick, int24 highTick)
 ```
 
-### Test
+Places a new limit order at the specified tick price.
 
-```shell
-$ forge test
+```solidity
+function cancelLimitOrder(
+PoolKey calldata key,
+int24 limitOrderTick,
+bool zeroForOne,
+uint256 amountToCancel
+) external
 ```
 
-### Format
+Cancels an existing limit order and returns the original tokens.
 
-```shell
-$ forge fmt
+```solidity
+function redeem(
+PoolKey calldata key,
+int24 limitOrderTick,
+bool zeroForOne,
+uint256 inputAmountToClaimFor
+) external
 ```
 
-### Gas Snapshots
+Claims tokens after a successful order execution.
 
-```shell
-$ forge snapshot
+## How It Works
+
+1. **Order Placement**
+   - User specifies a price (tick) and amount for their order
+   - Tokens are transferred to the hook contract
+   - User receives ERC-1155 tokens representing their position
+   - Order is added to the appropriate sorted list (bids or asks)
+
+2. **Order Execution**
+   - Triggered automatically during Uniswap swaps via the `afterSwap` hook
+   - Orders are executed when market price crosses the limit price
+   - Executed orders are removed from the order book
+   - Output tokens become claimable by position holders
+
+3. **Order Cancellation**
+   - Users can cancel orders at any time before execution
+   - Original tokens are returned to the user
+   - Position tokens are burned
+   - Order is removed from the order book
+
+## Testing
+
+The repository includes comprehensive tests covering:
+- Order placement (both buy and sell orders)
+- Order cancellation
+- Order execution
+- Multiple order scenarios
+- Edge cases
+
+Run tests using Forge:
+
+```bash
+forge test
 ```
 
-### Anvil
+## Installation
 
-```shell
-$ anvil
+1. Clone the repository:
+
+```bash
+git clone https://github.com/julio75012/white-belt-hook
 ```
 
-### Deploy
+2. Install dependencies:
 
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
+```bash
+forge install
 ```
 
-### Cast
+## Requirements
 
-```shell
-$ cast <subcommand>
-```
+- Foundry/Forge
+- Solidity ^0.8.0
+- Uniswap v4 core contracts
 
-### Help
+## Security Considerations
 
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+- The contract handles user funds and should be thoroughly audited before production use
+- Price manipulation risks should be considered
+- Gas optimization for order execution is important
+- Proper access controls and input validation are crucial
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## Disclaimer
+
+This code is provided as-is and has not been audited. Use at your own risk.

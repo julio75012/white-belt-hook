@@ -15,9 +15,9 @@ This hook enables limit order functionality in Uniswap v4 pools by leveraging th
 - **Sorted Order Books**: Maintains separate sorted lists for bids and asks
 - **Partial Fill Support**: Orders can be partially filled and claimed
 
-## Demo & Explanation
+## YouTube Demo & Explanation
 
-[![Uniswap v4 Limit Order Hook Explanation](https://www.youtube.com/embed/VMt0i9OPEzY?si=G0DQKEvzFpNM6TZH)
+[YouTube Uniswap v4 Limit Order Hook Explanation](https://www.youtube.com/embed/VMt0i9OPEzY?si=G0DQKEvzFpNM6TZH)
 
 Click the link above to watch the explanation video on YouTube.
 

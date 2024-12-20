@@ -26,8 +26,6 @@ import {FixedPointMathLib} from "solmate/src/utils/FixedPointMathLib.sol";
 
 import {StructuredLinkedList} from "./StructuredLinkedList.sol";
 
-import "forge-std/console.sol";
-
 contract LimitOrderHook is BaseHook, ERC1155 {
     using StateLibrary for IPoolManager;
     using PoolIdLibrary for PoolKey;

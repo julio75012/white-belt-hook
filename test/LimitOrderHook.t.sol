@@ -22,8 +22,6 @@ import {TickMath} from "v4-core/libraries/TickMath.sol";
 // Our contracts
 import {LimitOrderHook} from "../src/LimitOrderHook.sol";
 
-import "forge-std/console.sol";
-
 contract LimitOrderHookTest is Test, Deployers {
     // Use the libraries
     using StateLibrary for IPoolManager;
@@ -124,7 +122,6 @@ contract LimitOrderHookTest is Test, Deployers {
 
         // Note the new balance of token0 we have
         uint256 newBalance = token0.balanceOfSelf();
-        console.log(newBalance);
 
         assertEq(tickLower, 3000);
         assertEq(tickHigher, 3060);
@@ -161,7 +158,6 @@ contract LimitOrderHookTest is Test, Deployers {
 
         // Note the new balance of token0 we have
         uint256 newBalance = token1.balanceOfSelf();
-        console.log(newBalance);
 
         assertEq(tickLower, -7020);
         assertEq(tickHigher, -6960);

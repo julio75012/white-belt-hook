@@ -26,8 +26,6 @@ import {FixedPointMathLib} from "solmate/src/utils/FixedPointMathLib.sol";
 
 import {StructuredLinkedList} from "./StructuredLinkedList.sol";
 
-import "forge-std/console.sol";
-
 contract LimitOrderHook is BaseHook, ERC1155 {
     using StateLibrary for IPoolManager;
     using PoolIdLibrary for PoolKey;
@@ -167,6 +165,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
      */
     function cancelLimitOrder(PoolKey calldata key, int24 limitOrderTick, bool zeroForOne, uint256 amountToCancel)
         external
+        returns (BalanceDelta delta)
     {
         // Get the smallest tick range on which we will add liquidity
         (int24 lowTick, int24 highTick) = _getMinimalTickRange(limitOrderTick, key.tickSpacing, zeroForOne);
@@ -186,7 +185,7 @@ contract LimitOrderHook is BaseHook, ERC1155 {
             salt: bytes32(0)
         });
 
-        poolManager.unlock(abi.encode(CallbackData(key, params, msg.sender)));
+        delta = abi.decode(poolManager.unlock(abi.encode(CallbackData(key, params, msg.sender))), (BalanceDelta));
 
         //NOTE: I put the liquidity removal before the 'internal accounting', making sure it works first.
 

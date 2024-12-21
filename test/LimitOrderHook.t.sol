@@ -10,6 +10,7 @@ import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 
 import {PoolManager} from "v4-core/PoolManager.sol";
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
+import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 
 import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
 import {Currency, CurrencyLibrary} from "v4-core/types/Currency.sol";
@@ -21,8 +22,6 @@ import {TickMath} from "v4-core/libraries/TickMath.sol";
 
 // Our contracts
 import {LimitOrderHook} from "../src/LimitOrderHook.sol";
-
-import "forge-std/console.sol";
 
 contract LimitOrderHookTest is Test, Deployers {
     // Use the libraries
@@ -93,6 +92,12 @@ contract LimitOrderHookTest is Test, Deployers {
         );
     }
 
+    struct LimitOrderParams {
+        int24 tick;
+        uint256 amount;
+        bool zeroForOne;
+    }
+
     function onERC1155Received(address, address, uint256, uint256, bytes calldata) external pure returns (bytes4) {
         return this.onERC1155Received.selector;
     }
@@ -124,7 +129,6 @@ contract LimitOrderHookTest is Test, Deployers {
 
         // Note the new balance of token0 we have
         uint256 newBalance = token0.balanceOfSelf();
-        console.log(newBalance);
 
         assertEq(tickLower, 3000);
         assertEq(tickHigher, 3060);
@@ -161,7 +165,6 @@ contract LimitOrderHookTest is Test, Deployers {
 
         // Note the new balance of token0 we have
         uint256 newBalance = token1.balanceOfSelf();
-        console.log(newBalance);
 
         assertEq(tickLower, -7020);
         assertEq(tickHigher, -6960);
@@ -213,10 +216,91 @@ contract LimitOrderHookTest is Test, Deployers {
         assertEq(tokenBalance, 0);
     }
 
-    struct LimitOrderParams {
+    struct TestState {
         int24 tick;
         uint256 amount;
         bool zeroForOne;
+        uint256 originalBalance;
+        uint256 newBalance;
+        int24 tickLower;
+        int24 tickHigher;
+        int24 currentTick;
+        uint256 positionId;
+    }
+
+    function test_cancelLimitOrder_with_price_in_the_middle() public {
+        TestState memory state = TestState({
+            tick: -6930,
+            amount: 10e19,
+            zeroForOne: true,
+            originalBalance: token0.balanceOfSelf(),
+            newBalance: 0,
+            tickLower: 0,
+            tickHigher: 0,
+            currentTick: 0,
+            positionId: 0
+        });
+
+        // Place a limit order
+        state.originalBalance = token0.balanceOfSelf();
+        (state.tickLower, state.tickHigher) = hook.placeLimitOrder(key, state.tick, state.zeroForOne, state.amount);
+        state.newBalance = token0.balanceOfSelf();
+
+        (, state.currentTick,,) = manager.getSlot0(key.toId());
+
+        assertEq(state.currentTick, -6932);
+        assertEq(state.tickLower, -6900);
+        assertEq(state.tickHigher, -6840);
+        assertEq(state.originalBalance - state.newBalance, state.amount);
+
+        // Place a swap
+        IPoolManager.SwapParams memory swapParams = IPoolManager.SwapParams({
+            zeroForOne: !state.zeroForOne,
+            amountSpecified: -5 ether,
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+
+        PoolSwapTest.TestSettings memory testSettings =
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
+
+        int256 deltaSwap0 = int256(token0.balanceOfSelf()); //variable used as a buffer here (it is not a "delta" yet)
+        int256 deltaSwap1 = int256(token1.balanceOfSelf()); //variable used as a buffer here (it is not a "delta" yet)
+
+        BalanceDelta deltaSwap = swapRouter.swap(key, swapParams, testSettings, ZERO_BYTES);
+
+        //checking deltas of this swap
+        deltaSwap0 = int256(token0.balanceOfSelf()) - deltaSwap0;
+        deltaSwap1 = int256(token1.balanceOfSelf()) - deltaSwap1;
+        assertEq(deltaSwap0, deltaSwap.amount0());
+        assertEq(deltaSwap1, deltaSwap.amount1());
+
+        (, state.currentTick,,) = manager.getSlot0(key.toId());
+        //checking that currentTick ends up stricly between lower and higher ticks
+        assertEq(state.currentTick, -6895);
+        assertEq(state.tickLower, -6900);
+        assertEq(state.tickHigher, -6840);
+
+        // Check the balance of ERC-1155 tokens we received
+        state.positionId = hook.getPositionId(key, state.tickHigher, state.zeroForOne);
+        uint256 tokenBalance = hook.balanceOf(address(this), state.positionId);
+        assertEq(tokenBalance, state.amount);
+
+        // Cancel the order
+        int256 deltaCancel0 = int256(token0.balanceOfSelf()); //variable used as a buffer here (it is not a "delta" yet)
+        int256 deltaCancel1 = int256(token1.balanceOfSelf()); //variable used as a buffer here (it is not a "delta" yet)
+
+        BalanceDelta deltaCancel = hook.cancelLimitOrder(key, state.tick, state.zeroForOne, state.amount);
+
+        //checking that the deltas are correct
+        //we observe that the users retrieves a mix of the 2 tokens, which means that only some (but not all) quantitites has been executed
+        deltaCancel0 = int256(token0.balanceOfSelf()) - deltaCancel0;
+        deltaCancel1 = int256(token1.balanceOfSelf()) - deltaCancel1;
+        assertEq(deltaCancel0, deltaCancel.amount0());
+        assertEq(deltaCancel1, deltaCancel.amount1());
+
+        // Check that we received our token0 tokens back, and no longer own any ERC-1155 tokens
+        tokenBalance = hook.balanceOf(address(this), state.positionId);
+        assertEq(tokenBalance, 0);
     }
 
     function test_orderExecute_zeroForOne() public {
